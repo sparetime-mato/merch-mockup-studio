@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Download, X, RotateCw, Copy, Layers, Image as ImageIcon, Shirt, Trash2, ChevronRight, Target, Sliders, Package, Settings } from 'lucide-react';
+import { Upload, Download, X, RotateCw, Copy, Layers, Image as ImageIcon, Shirt, Trash2, ChevronRight, Target, Sliders, Package, Settings, GripVertical, Pencil, Check } from 'lucide-react';
 
 // ───────────────────────────────────────────────────────────────
-// Merch Mockup Studio — Phase 1.1
-// Clean Swiss aesthetic · Right Chest preset · Filename templating
-// · Resize handles on canvas
+// Merch Mockup Studio — Phase 1.2
+// + Gender per garment · Editable garment names
+// + Configurable, reorderable filename tokens
+// + Skew X/Y sliders (perspective)
 // ───────────────────────────────────────────────────────────────
 
 const PRESET_ZONES = {
@@ -39,6 +40,13 @@ const GARMENT_TYPES = [
   { id: 'other',  label: 'Other' },
 ];
 
+const GENDERS = [
+  { id: 'na',    label: '—',      slug: '' },
+  { id: 'men',   label: 'Men',    slug: 'men' },
+  { id: 'women', label: 'Women',  slug: 'women' },
+  { id: 'kids',  label: 'Kids',   slug: 'kids' },
+];
+
 const BLEND_MODES = [
   { id: 'source-over',  label: 'Normal' },
   { id: 'multiply',     label: 'Multiply' },
@@ -46,6 +54,25 @@ const BLEND_MODES = [
   { id: 'overlay',      label: 'Overlay' },
   { id: 'darken',       label: 'Darken' },
   { id: 'lighten',      label: 'Lighten' },
+];
+
+// All filename tokens available to the user
+const ALL_TOKENS = [
+  { id: 'prefix',    label: 'Prefix' },
+  { id: 'gender',    label: 'Gender' },
+  { id: 'type',      label: 'Garment Type' },
+  { id: 'name',      label: 'Garment Name' },
+  { id: 'placement', label: 'Placement' },
+  { id: 'index',     label: 'Index' },
+];
+
+const DEFAULT_TOKEN_ORDER = [
+  { id: 'prefix',    enabled: true  },
+  { id: 'gender',    enabled: true  },
+  { id: 'type',      enabled: true  },
+  { id: 'name',      enabled: true  },
+  { id: 'placement', enabled: false },
+  { id: 'index',     enabled: true  },
 ];
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -58,39 +85,29 @@ const fileToImage = (file) => new Promise((res, rej) => {
   img.src = url;
 });
 
-// Build a composite PNG data URL from garment + placement
-const composeMockup = (garment, logoImg, placement) => {
-  const { img } = garment;
-  const canvas = document.createElement('canvas');
-  canvas.width = img.naturalWidth;
-  canvas.height = img.naturalHeight;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(img, 0, 0);
-
-  if (logoImg && placement) {
-    const { xPct, yPct, widthPct, rotation, opacity, blend } = placement;
-    const targetW = widthPct * canvas.width;
-    const aspect = logoImg.naturalHeight / logoImg.naturalWidth;
-    const targetH = targetW * aspect;
-    ctx.save();
-    ctx.globalAlpha = opacity;
-    ctx.globalCompositeOperation = blend;
-    ctx.translate(xPct * canvas.width, yPct * canvas.height);
-    ctx.rotate((rotation * Math.PI) / 180);
-    ctx.drawImage(logoImg, -targetW / 2, -targetH / 2, targetW, targetH);
-    ctx.restore();
-  }
-  return canvas.toDataURL('image/png');
+// Strip extension and slugify for initial garment display name
+const nameFromFilename = (filename) => {
+  const base = filename.replace(/\.[^.]+$/, '');
+  return base.replace(/[_]+/g, ' ').trim();
 };
 
-// Slugify for SEO filenames
+// Slugify for SEO-safe filenames
 const slugify = (s) => (s || '')
   .toLowerCase()
   .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   .replace(/[^a-z0-9]+/g, '-')
   .replace(/(^-|-$)/g, '');
 
-// Map placement back to a preset id (or 'custom')
+// Auto-detect gender from filename
+const guessGender = (name) => {
+  const n = name.toLowerCase();
+  if (/\b(women|womens|woman|female|ladies)\b/.test(n)) return 'women';
+  if (/\b(men|mens|man|male)\b/.test(n)) return 'men';
+  if (/\b(kids|kid|child|children|youth|boys?|girls?)\b/.test(n)) return 'kids';
+  return 'na';
+};
+
+// Map placement back to a preset id
 const placementZoneId = (type, placement, tolerance = 0.02) => {
   const zones = PRESET_ZONES[type] || [];
   const hit = zones.find(z =>
@@ -101,18 +118,53 @@ const placementZoneId = (type, placement, tolerance = 0.02) => {
   return hit ? hit.id : 'custom';
 };
 
-// Resolve template tokens into a filename
-const buildFilename = ({ prefix, type, placement, index }) => {
-  const tokens = {
-    prefix: slugify(prefix) || 'mockup',
-    type: slugify(type),
+// Build filename using user-configured tokens
+const buildFilename = ({ tokens, prefix, garment, index, extension = 'png' }) => {
+  const placement = placementZoneId(garment.type, garment.placement);
+  const values = {
+    prefix: slugify(prefix),
+    gender: GENDERS.find(g => g.id === garment.gender)?.slug || '',
+    type: slugify(garment.type),
+    name: slugify(garment.displayName),
     placement: slugify(placement),
     index: String(index + 1).padStart(2, '0'),
   };
-  return `${tokens.prefix}-${tokens.type}-${tokens.placement}-${tokens.index}.png`;
+  const parts = tokens
+    .filter(t => t.enabled)
+    .map(t => values[t.id])
+    .filter(v => v && v.length > 0);
+  const stem = parts.join('-') || 'mockup';
+  return `${stem}.${extension}`;
 };
 
-// Minimal ZIP (STORE, no compression) — no external deps
+// Build a composite PNG data URL from garment + placement
+const composeMockup = (garment, logoImg, placement) => {
+  const { img } = garment;
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+
+  if (logoImg && placement) {
+    const { xPct, yPct, widthPct, rotation, opacity, blend, skewX = 0, skewY = 0 } = placement;
+    const targetW = widthPct * canvas.width;
+    const aspect = logoImg.naturalHeight / logoImg.naturalWidth;
+    const targetH = targetW * aspect;
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.globalCompositeOperation = blend;
+    ctx.translate(xPct * canvas.width, yPct * canvas.height);
+    ctx.rotate((rotation * Math.PI) / 180);
+    // Skew — tan of angle in radians
+    ctx.transform(1, Math.tan((skewY * Math.PI) / 180), Math.tan((skewX * Math.PI) / 180), 1, 0, 0);
+    ctx.drawImage(logoImg, -targetW / 2, -targetH / 2, targetW, targetH);
+    ctx.restore();
+  }
+  return canvas.toDataURL('image/png');
+};
+
+// Minimal ZIP (STORE, no compression)
 const buildZip = async (files) => {
   const encoder = new TextEncoder();
   const fileEntries = [];
@@ -196,7 +248,10 @@ export default function App() {
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
   const [filenamePrefix, setFilenamePrefix] = useState('my-brand');
+  const [tokens, setTokens] = useState(DEFAULT_TOKEN_ORDER);
   const [showExportPanel, setShowExportPanel] = useState(false);
+  const [editingName, setEditingName] = useState(null);
+  const [tokenDragIndex, setTokenDragIndex] = useState(null);
 
   const garmentInput = useRef();
   const logoInput = useRef();
@@ -213,9 +268,12 @@ export default function App() {
       ...l,
       id: uid(),
       type: guessType(l.name),
+      gender: guessGender(l.name),
+      displayName: nameFromFilename(l.name),
       placement: {
         xPct: 0.5, yPct: 0.32, widthPct: 0.22,
         rotation: 0, opacity: 1, blend: 'source-over',
+        skewX: 0, skewY: 0,
       },
     }));
     setGarments(prev => [...prev, ...newOnes]);
@@ -240,6 +298,10 @@ export default function App() {
   const updatePlacement = (garmentId, patch) => {
     setGarments(prev => prev.map(g => g.id === garmentId
       ? { ...g, placement: { ...g.placement, ...patch } } : g));
+  };
+
+  const updateGarment = (garmentId, patch) => {
+    setGarments(prev => prev.map(g => g.id === garmentId ? { ...g, ...patch } : g));
   };
 
   const applyPresetZone = (zone) => {
@@ -276,6 +338,24 @@ export default function App() {
     }
   };
 
+  // ──────── Token reordering (drag & drop) ────────
+  const onTokenDragStart = (i) => setTokenDragIndex(i);
+  const onTokenDragOver = (e, i) => {
+    e.preventDefault();
+    if (tokenDragIndex === null || tokenDragIndex === i) return;
+    setTokens(prev => {
+      const next = [...prev];
+      const [item] = next.splice(tokenDragIndex, 1);
+      next.splice(i, 0, item);
+      return next;
+    });
+    setTokenDragIndex(i);
+  };
+  const onTokenDragEnd = () => setTokenDragIndex(null);
+  const toggleToken = (id) => {
+    setTokens(prev => prev.map(t => t.id === id ? { ...t, enabled: !t.enabled } : t));
+  };
+
   // ──────── Canvas rendering ────────
   const HANDLE_SIZE = 10;
 
@@ -310,10 +390,11 @@ export default function App() {
       ctx.globalCompositeOperation = p.blend;
       ctx.translate(p.xPct * w, p.yPct * h);
       ctx.rotate((p.rotation * Math.PI) / 180);
+      ctx.transform(1, Math.tan((p.skewY * Math.PI) / 180), Math.tan((p.skewX * Math.PI) / 180), 1, 0, 0);
       ctx.drawImage(currentLogo.img, -targetW / 2, -targetH / 2, targetW, targetH);
       ctx.restore();
 
-      // Selection frame + handles
+      // Selection frame + handles (drawn WITHOUT skew for clean UI)
       ctx.save();
       ctx.translate(p.xPct * w, p.yPct * h);
       ctx.rotate((p.rotation * Math.PI) / 180);
@@ -324,7 +405,6 @@ export default function App() {
       ctx.strokeRect(-targetW / 2, -targetH / 2, targetW, targetH);
       ctx.setLineDash([]);
 
-      // Corner resize handles (white square with black outline — clear on any bg)
       const handles = [
         [-targetW / 2, -targetH / 2],
         [ targetW / 2, -targetH / 2],
@@ -339,7 +419,6 @@ export default function App() {
         ctx.strokeRect(hx - HANDLE_SIZE/2, hy - HANDLE_SIZE/2, HANDLE_SIZE, HANDLE_SIZE);
       });
 
-      // Rotation handle (circle above top of box)
       const rotY = -targetH / 2 - 28;
       ctx.beginPath();
       ctx.moveTo(0, -targetH / 2);
@@ -473,11 +552,8 @@ export default function App() {
   const exportSingle = () => {
     if (!currentGarment || !currentLogo) return;
     const dataUrl = composeMockup(currentGarment, currentLogo.img, currentGarment.placement);
-    const placementId = placementZoneId(currentGarment.type, currentGarment.placement);
     const filename = buildFilename({
-      prefix: filenamePrefix,
-      type: currentGarment.type,
-      placement: placementId,
+      tokens, prefix: filenamePrefix, garment: currentGarment,
       index: garments.findIndex(g => g.id === currentGarment.id),
     });
     const a = document.createElement('a');
@@ -494,12 +570,8 @@ export default function App() {
     for (let i = 0; i < garments.length; i++) {
       const g = garments[i];
       const dataUrl = composeMockup(g, currentLogo.img, g.placement);
-      const placementId = placementZoneId(g.type, g.placement);
       const filename = buildFilename({
-        prefix: filenamePrefix,
-        type: g.type,
-        placement: placementId,
-        index: i,
+        tokens, prefix: filenamePrefix, garment: g, index: i,
       });
       files.push({ name: filename, data: dataUrlToBytes(dataUrl) });
       setExportProgress(Math.round(((i + 1) / garments.length) * 100));
@@ -520,12 +592,16 @@ export default function App() {
 
   const previewFilename = currentGarment
     ? buildFilename({
-        prefix: filenamePrefix,
-        type: currentGarment.type,
-        placement: placementZoneId(currentGarment.type, currentGarment.placement),
+        tokens, prefix: filenamePrefix, garment: currentGarment,
         index: garments.findIndex(g => g.id === currentGarment.id),
       })
     : '';
+
+  // Preview pattern as tokens
+  const previewPattern = tokens
+    .filter(t => t.enabled)
+    .map(t => t.id)
+    .join('-') || 'mockup';
 
   return (
     <div className="min-h-screen w-full bg-white text-black"
@@ -609,6 +685,11 @@ export default function App() {
           transition: border-color 120ms;
         }
         input[type="text"]:focus { border-color: #000; }
+        .inline-edit {
+          padding: 2px 4px !important;
+          font-size: 13px !important;
+          border: 1px solid #000 !important;
+        }
         select {
           background: transparent; font-family: inherit;
           font-size: 11px; text-transform: uppercase;
@@ -617,6 +698,27 @@ export default function App() {
           cursor: pointer;
         }
         .mono { font-family: 'SF Mono', ui-monospace, Menlo, monospace; }
+        .token-row {
+          display: flex; align-items: center; gap: 10px;
+          padding: 8px 10px;
+          border: 1px solid #E5E5E5;
+          background: #fff;
+          margin-bottom: 4px;
+          cursor: grab;
+          user-select: none;
+          transition: border-color 120ms, background 120ms;
+        }
+        .token-row:hover { border-color: #000; }
+        .token-row.disabled { opacity: 0.5; background: #FAFAFA; }
+        .token-row.dragging { opacity: 0.3; }
+        .token-row:active { cursor: grabbing; }
+        .token-checkbox {
+          width: 14px; height: 14px;
+          border: 1px solid #000;
+          display: inline-flex; align-items: center; justify-content: center;
+          background: #fff;
+        }
+        .token-checkbox.checked { background: #000; color: #fff; }
       `}</style>
 
       {/* HEADER */}
@@ -656,7 +758,7 @@ export default function App() {
 
         {showExportPanel && (
           <div className="border-t border-black/10 bg-[#FAFAFA]">
-            <div className="max-w-[1600px] mx-auto px-8 py-5 grid grid-cols-12 gap-6 items-start">
+            <div className="max-w-[1600px] mx-auto px-8 py-6 grid grid-cols-12 gap-6">
               <div className="col-span-12 md:col-span-4">
                 <label className="label block mb-2">Filename prefix</label>
                 <input
@@ -666,29 +768,48 @@ export default function App() {
                   placeholder="my-brand"
                 />
                 <p className="text-xs text-black/50 mt-1.5">
-                  SEO prefix used on every exported image.
+                  Used as the <code>prefix</code> token (if enabled).
                 </p>
               </div>
-              <div className="col-span-12 md:col-span-5">
-                <label className="label block mb-2">Filename pattern</label>
-                <div className="mono text-xs p-3 border border-black/10 bg-white">
-                  <span className="text-black/40">{'{'}</span>prefix<span className="text-black/40">{'}'}</span>
-                  <span className="text-black/40">-</span>
-                  <span className="text-black/40">{'{'}</span>type<span className="text-black/40">{'}'}</span>
-                  <span className="text-black/40">-</span>
-                  <span className="text-black/40">{'{'}</span>placement<span className="text-black/40">{'}'}</span>
-                  <span className="text-black/40">-</span>
-                  <span className="text-black/40">{'{'}</span>index<span className="text-black/40">{'}'}</span>.png
+
+              <div className="col-span-12 md:col-span-4">
+                <label className="label block mb-2">Filename tokens · drag to reorder</label>
+                <div>
+                  {tokens.map((t, i) => (
+                    <div
+                      key={t.id}
+                      className={`token-row ${!t.enabled ? 'disabled' : ''} ${tokenDragIndex === i ? 'dragging' : ''}`}
+                      draggable
+                      onDragStart={() => onTokenDragStart(i)}
+                      onDragOver={(e) => onTokenDragOver(e, i)}
+                      onDragEnd={onTokenDragEnd}
+                    >
+                      <GripVertical size={13} className="opacity-40" />
+                      <button
+                        onClick={() => toggleToken(t.id)}
+                        className={`token-checkbox ${t.enabled ? 'checked' : ''}`}
+                      >
+                        {t.enabled && <Check size={10} strokeWidth={3} />}
+                      </button>
+                      <span className="text-sm flex-1">{ALL_TOKENS.find(a => a.id === t.id).label}</span>
+                      <span className="mono text-xs text-black/40">{`{${t.id}}`}</span>
+                    </div>
+                  ))}
                 </div>
-                <p className="text-xs text-black/50 mt-1.5">
-                  Types: tshirt, hoodie, cap, other · Placements: chest-center, left-chest, right-chest, full-front, back-center, hood, front, side, back, center, custom
-                </p>
               </div>
-              <div className="col-span-12 md:col-span-3">
+
+              <div className="col-span-12 md:col-span-4">
                 <label className="label block mb-2">Preview</label>
+                <div className="mono text-xs p-3 border border-black/10 bg-white break-all mb-2">
+                  {previewPattern}.png
+                </div>
+                <label className="label block mb-2 mt-4">Current garment will export as</label>
                 <div className="mono text-xs p-3 border border-black/10 bg-white break-all">
                   {previewFilename || <span className="text-black/40">No garment selected</span>}
                 </div>
+                <p className="text-xs text-black/50 mt-3">
+                  Empty tokens are skipped. e.g. a garment with Gender = "—" omits that segment.
+                </p>
               </div>
             </div>
           </div>
@@ -728,32 +849,63 @@ export default function App() {
               </div>
             )}
 
-            <div className="space-y-2 max-h-[340px] overflow-y-auto">
+            <div className="space-y-2 max-h-[480px] overflow-y-auto">
               {garments.map(g => (
                 <div
                   key={g.id}
-                  className={`thumb cursor-pointer p-2 flex items-center gap-3 ${activeGarment === g.id ? 'active' : ''}`}
+                  className={`thumb cursor-pointer p-2 flex items-start gap-3 ${activeGarment === g.id ? 'active' : ''}`}
                   onClick={() => setActiveGarment(g.id)}
                 >
-                  <img src={g.url} alt={g.name} className="w-12 h-12 object-cover" />
+                  <img src={g.url} alt={g.displayName} className="w-12 h-12 object-cover flex-shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm truncate">{g.name}</div>
-                    <select
-                      value={g.type}
-                      onClick={e => e.stopPropagation()}
-                      onChange={e => {
-                        const newType = e.target.value;
-                        setGarments(prev => prev.map(x => x.id === g.id ? { ...x, type: newType } : x));
-                      }}
-                    >
-                      {GARMENT_TYPES.map(t => (
-                        <option key={t.id} value={t.id}>{t.label}</option>
-                      ))}
-                    </select>
+                    {editingName === g.id ? (
+                      <input
+                        type="text"
+                        className="inline-edit"
+                        value={g.displayName}
+                        autoFocus
+                        onClick={e => e.stopPropagation()}
+                        onChange={e => updateGarment(g.id, { displayName: e.target.value })}
+                        onBlur={() => setEditingName(null)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' || e.key === 'Escape') setEditingName(null);
+                        }}
+                      />
+                    ) : (
+                      <div
+                        className="text-sm truncate flex items-center gap-1 group"
+                        onClick={e => { e.stopPropagation(); setEditingName(g.id); }}
+                        title="Click to rename"
+                      >
+                        <span className="truncate">{g.displayName}</span>
+                        <Pencil size={10} className="opacity-0 group-hover:opacity-40 flex-shrink-0" />
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <select
+                        value={g.type}
+                        onClick={e => e.stopPropagation()}
+                        onChange={e => updateGarment(g.id, { type: e.target.value })}
+                      >
+                        {GARMENT_TYPES.map(t => (
+                          <option key={t.id} value={t.id}>{t.label}</option>
+                        ))}
+                      </select>
+                      <span className="text-black/20">·</span>
+                      <select
+                        value={g.gender}
+                        onClick={e => e.stopPropagation()}
+                        onChange={e => updateGarment(g.id, { gender: e.target.value })}
+                      >
+                        {GENDERS.map(ge => (
+                          <option key={ge.id} value={ge.id}>{ge.label}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                   <button
                     onClick={e => { e.stopPropagation(); removeGarment(g.id); }}
-                    className="opacity-30 hover:opacity-100"
+                    className="opacity-30 hover:opacity-100 flex-shrink-0"
                   >
                     <Trash2 size={13} />
                   </button>
@@ -823,7 +975,7 @@ export default function App() {
               <Target size={13} /> Preview
             </h2>
             {currentGarment && (
-              <span className="label label-muted truncate max-w-[60%]">{currentGarment.name}</span>
+              <span className="label label-muted truncate max-w-[60%]">{currentGarment.displayName}</span>
             )}
           </div>
 
@@ -925,6 +1077,38 @@ export default function App() {
 
               <section>
                 <div className="flex items-center justify-between mb-1">
+                  <label className="label">Skew X (perspective)</label>
+                  <span className="label label-muted">{p.skewX || 0}°</span>
+                </div>
+                <input
+                  type="range" className="slider"
+                  min={-45} max={45} step={1}
+                  value={p.skewX || 0}
+                  onChange={e => updatePlacement(currentGarment.id, { skewX: +e.target.value })}
+                />
+              </section>
+
+              <section>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="label">Skew Y (perspective)</label>
+                  <span className="label label-muted">{p.skewY || 0}°</span>
+                </div>
+                <input
+                  type="range" className="slider"
+                  min={-45} max={45} step={1}
+                  value={p.skewY || 0}
+                  onChange={e => updatePlacement(currentGarment.id, { skewY: +e.target.value })}
+                />
+                <button
+                  className="btn-text label-muted mt-1"
+                  onClick={() => updatePlacement(currentGarment.id, { skewX: 0, skewY: 0 })}
+                >
+                  Reset skew
+                </button>
+              </section>
+
+              <section>
+                <div className="flex items-center justify-between mb-1">
                   <label className="label">Opacity</label>
                   <span className="label label-muted">{Math.round(p.opacity * 100)}%</span>
                 </div>
@@ -980,7 +1164,7 @@ export default function App() {
       <footer className="hairline mt-10">
         <div className="max-w-[1600px] mx-auto px-8 py-5 flex items-center justify-between label label-muted">
           <span>All compositing runs in your browser. Nothing is uploaded.</span>
-          <span>v0.2 · Canvas Engine</span>
+          <span>v0.3 · Canvas Engine</span>
         </div>
       </footer>
     </div>
