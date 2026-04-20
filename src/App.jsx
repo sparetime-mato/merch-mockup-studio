@@ -1,38 +1,41 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Upload, Download, Plus, X, RotateCw, Copy, Layers, Image as ImageIcon, Shirt, Trash2, ChevronRight, Target, Sliders, Package } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Upload, Download, X, RotateCw, Copy, Layers, Image as ImageIcon, Shirt, Trash2, ChevronRight, Target, Sliders, Package, Settings } from 'lucide-react';
 
 // ───────────────────────────────────────────────────────────────
-// Merch Mockup Studio — Phase 1 (Canvas-based, no AI, no backend)
-// Aesthetic: atelier / darkroom, warm paper + ink + one hot accent
+// Merch Mockup Studio — Phase 1.1
+// Clean Swiss aesthetic · Right Chest preset · Filename templating
+// · Resize handles on canvas
 // ───────────────────────────────────────────────────────────────
 
 const PRESET_ZONES = {
   tshirt: [
-    { id: 'chest-center', label: 'Chest', x: 0.5, y: 0.32, w: 0.22 },
-    { id: 'chest-left',   label: 'Left Chest', x: 0.37, y: 0.30, w: 0.10 },
-    { id: 'full-front',   label: 'Full Front', x: 0.5, y: 0.45, w: 0.48 },
-    { id: 'back-center',  label: 'Back', x: 0.5, y: 0.38, w: 0.40 },
+    { id: 'chest-center', label: 'Chest',       x: 0.50, y: 0.32, w: 0.22 },
+    { id: 'left-chest',   label: 'Left Chest',  x: 0.37, y: 0.30, w: 0.10 },
+    { id: 'right-chest',  label: 'Right Chest', x: 0.63, y: 0.30, w: 0.10 },
+    { id: 'full-front',   label: 'Full Front',  x: 0.50, y: 0.45, w: 0.48 },
+    { id: 'back-center',  label: 'Back',        x: 0.50, y: 0.38, w: 0.40 },
   ],
   hoodie: [
-    { id: 'chest-center', label: 'Chest', x: 0.5, y: 0.34, w: 0.22 },
-    { id: 'chest-left',   label: 'Left Chest', x: 0.38, y: 0.32, w: 0.10 },
-    { id: 'hood',         label: 'Hood', x: 0.5, y: 0.14, w: 0.12 },
-    { id: 'back-center',  label: 'Back', x: 0.5, y: 0.42, w: 0.42 },
+    { id: 'chest-center', label: 'Chest',       x: 0.50, y: 0.34, w: 0.22 },
+    { id: 'left-chest',   label: 'Left Chest',  x: 0.38, y: 0.32, w: 0.10 },
+    { id: 'right-chest',  label: 'Right Chest', x: 0.62, y: 0.32, w: 0.10 },
+    { id: 'hood',         label: 'Hood',        x: 0.50, y: 0.14, w: 0.12 },
+    { id: 'back-center',  label: 'Back',        x: 0.50, y: 0.42, w: 0.42 },
   ],
   cap: [
-    { id: 'front',  label: 'Front', x: 0.5,  y: 0.55, w: 0.28 },
+    { id: 'front',  label: 'Front', x: 0.50, y: 0.55, w: 0.28 },
     { id: 'side',   label: 'Side',  x: 0.78, y: 0.52, w: 0.14 },
-    { id: 'back',   label: 'Back',  x: 0.5,  y: 0.55, w: 0.22 },
+    { id: 'back',   label: 'Back',  x: 0.50, y: 0.55, w: 0.22 },
   ],
   other: [
-    { id: 'center', label: 'Center', x: 0.5, y: 0.5, w: 0.30 },
+    { id: 'center', label: 'Center', x: 0.50, y: 0.50, w: 0.30 },
   ],
 };
 
 const GARMENT_TYPES = [
   { id: 'tshirt', label: 'T-Shirt' },
   { id: 'hoodie', label: 'Hoodie' },
-  { id: 'cap',    label: 'Cap / Hat' },
+  { id: 'cap',    label: 'Cap' },
   { id: 'other',  label: 'Other' },
 ];
 
@@ -47,7 +50,6 @@ const BLEND_MODES = [
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-// Load an image file as an HTMLImageElement
 const fileToImage = (file) => new Promise((res, rej) => {
   const img = new Image();
   const url = URL.createObjectURL(file);
@@ -81,91 +83,92 @@ const composeMockup = (garment, logoImg, placement) => {
   return canvas.toDataURL('image/png');
 };
 
-// Minimal ZIP builder (STORE method, no compression) — avoids external deps
+// Slugify for SEO filenames
+const slugify = (s) => (s || '')
+  .toLowerCase()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/(^-|-$)/g, '');
+
+// Map placement back to a preset id (or 'custom')
+const placementZoneId = (type, placement, tolerance = 0.02) => {
+  const zones = PRESET_ZONES[type] || [];
+  const hit = zones.find(z =>
+    Math.abs(z.x - placement.xPct) < tolerance &&
+    Math.abs(z.y - placement.yPct) < tolerance &&
+    Math.abs(z.w - placement.widthPct) < tolerance
+  );
+  return hit ? hit.id : 'custom';
+};
+
+// Resolve template tokens into a filename
+const buildFilename = ({ prefix, type, placement, index }) => {
+  const tokens = {
+    prefix: slugify(prefix) || 'mockup',
+    type: slugify(type),
+    placement: slugify(placement),
+    index: String(index + 1).padStart(2, '0'),
+  };
+  return `${tokens.prefix}-${tokens.type}-${tokens.placement}-${tokens.index}.png`;
+};
+
+// Minimal ZIP (STORE, no compression) — no external deps
 const buildZip = async (files) => {
   const encoder = new TextEncoder();
   const fileEntries = [];
   const centralEntries = [];
   let offset = 0;
-
-  // CRC32 table
   const crcTable = (() => {
     const t = new Uint32Array(256);
     for (let n = 0; n < 256; n++) {
       let c = n;
       for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
       t[n] = c >>> 0;
-    }
-    return t;
+    } return t;
   })();
   const crc32 = (buf) => {
     let c = 0xFFFFFFFF;
     for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
     return (c ^ 0xFFFFFFFF) >>> 0;
   };
-
   for (const f of files) {
     const nameBytes = encoder.encode(f.name);
     const data = f.data;
     const crc = crc32(data);
     const size = data.length;
-
     const local = new Uint8Array(30 + nameBytes.length);
     const dv = new DataView(local.buffer);
     dv.setUint32(0, 0x04034b50, true);
-    dv.setUint16(4, 20, true);
-    dv.setUint16(6, 0, true);
-    dv.setUint16(8, 0, true); // STORE
-    dv.setUint16(10, 0, true);
-    dv.setUint16(12, 0, true);
-    dv.setUint32(14, crc, true);
-    dv.setUint32(18, size, true);
-    dv.setUint32(22, size, true);
-    dv.setUint16(26, nameBytes.length, true);
-    dv.setUint16(28, 0, true);
+    dv.setUint16(4, 20, true); dv.setUint16(6, 0, true);
+    dv.setUint16(8, 0, true); dv.setUint16(10, 0, true); dv.setUint16(12, 0, true);
+    dv.setUint32(14, crc, true); dv.setUint32(18, size, true); dv.setUint32(22, size, true);
+    dv.setUint16(26, nameBytes.length, true); dv.setUint16(28, 0, true);
     local.set(nameBytes, 30);
-
     fileEntries.push(local, data);
-
     const central = new Uint8Array(46 + nameBytes.length);
     const cv = new DataView(central.buffer);
     cv.setUint32(0, 0x02014b50, true);
-    cv.setUint16(4, 20, true);
-    cv.setUint16(6, 20, true);
-    cv.setUint16(8, 0, true);
-    cv.setUint16(10, 0, true);
-    cv.setUint16(12, 0, true);
-    cv.setUint16(14, 0, true);
-    cv.setUint32(16, crc, true);
-    cv.setUint32(20, size, true);
-    cv.setUint32(24, size, true);
-    cv.setUint16(28, nameBytes.length, true);
-    cv.setUint16(30, 0, true);
-    cv.setUint16(32, 0, true);
-    cv.setUint16(34, 0, true);
-    cv.setUint16(36, 0, true);
-    cv.setUint32(38, 0, true);
+    cv.setUint16(4, 20, true); cv.setUint16(6, 20, true);
+    cv.setUint16(8, 0, true); cv.setUint16(10, 0, true);
+    cv.setUint16(12, 0, true); cv.setUint16(14, 0, true);
+    cv.setUint32(16, crc, true); cv.setUint32(20, size, true); cv.setUint32(24, size, true);
+    cv.setUint16(28, nameBytes.length, true); cv.setUint16(30, 0, true); cv.setUint16(32, 0, true);
+    cv.setUint16(34, 0, true); cv.setUint16(36, 0, true); cv.setUint32(38, 0, true);
     cv.setUint32(42, offset, true);
     central.set(nameBytes, 46);
     centralEntries.push(central);
-
     offset += local.length + data.length;
   }
   const centralStart = offset;
   let centralSize = 0;
   centralEntries.forEach(e => centralSize += e.length);
-
   const end = new Uint8Array(22);
   const ev = new DataView(end.buffer);
   ev.setUint32(0, 0x06054b50, true);
-  ev.setUint16(4, 0, true);
-  ev.setUint16(6, 0, true);
-  ev.setUint16(8, files.length, true);
-  ev.setUint16(10, files.length, true);
-  ev.setUint32(12, centralSize, true);
-  ev.setUint32(16, centralStart, true);
+  ev.setUint16(4, 0, true); ev.setUint16(6, 0, true);
+  ev.setUint16(8, files.length, true); ev.setUint16(10, files.length, true);
+  ev.setUint32(12, centralSize, true); ev.setUint32(16, centralStart, true);
   ev.setUint16(20, 0, true);
-
   const total = offset + centralSize + end.length;
   const out = new Uint8Array(total);
   let p = 0;
@@ -183,23 +186,27 @@ const dataUrlToBytes = (dataUrl) => {
   return arr;
 };
 
+// ───────────────────────────────────────────────────────────────
+
 export default function App() {
-  const [garments, setGarments] = useState([]); // { id, name, img, url, type, placement }
-  const [logos, setLogos] = useState([]); // { id, name, img, url }
+  const [garments, setGarments] = useState([]);
+  const [logos, setLogos] = useState([]);
   const [activeLogo, setActiveLogo] = useState(null);
   const [activeGarment, setActiveGarment] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
+  const [filenamePrefix, setFilenamePrefix] = useState('my-brand');
+  const [showExportPanel, setShowExportPanel] = useState(false);
 
   const garmentInput = useRef();
   const logoInput = useRef();
   const canvasRef = useRef();
-  const dragState = useRef(null);
+  const stageRef = useRef();
+  const interaction = useRef(null);
 
   const currentGarment = garments.find(g => g.id === activeGarment);
   const currentLogo = logos.find(l => l.id === activeLogo);
 
-  // ──────── Upload handlers ────────
   const handleGarmentUpload = async (files) => {
     const loaded = await Promise.all(Array.from(files).map(fileToImage));
     const newOnes = loaded.map(l => ({
@@ -230,11 +237,9 @@ export default function App() {
     return 'other';
   };
 
-  // ──────── Placement updates ────────
   const updatePlacement = (garmentId, patch) => {
     setGarments(prev => prev.map(g => g.id === garmentId
-      ? { ...g, placement: { ...g.placement, ...patch } }
-      : g));
+      ? { ...g, placement: { ...g.placement, ...patch } } : g));
   };
 
   const applyPresetZone = (zone) => {
@@ -248,12 +253,8 @@ export default function App() {
     if (!currentGarment) return;
     const p = currentGarment.placement;
     setGarments(prev => prev.map(g =>
-      g.type === currentGarment.type
-        ? { ...g, placement: { ...p } }
-        : g
-    ));
+      g.type === currentGarment.type ? { ...g, placement: { ...p } } : g));
   };
-
   const applyToAll = () => {
     if (!currentGarment) return;
     const p = currentGarment.placement;
@@ -275,17 +276,18 @@ export default function App() {
     }
   };
 
-  // ──────── Canvas preview rendering ────────
+  // ──────── Canvas rendering ────────
+  const HANDLE_SIZE = 10;
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !currentGarment) return;
     const ctx = canvas.getContext('2d');
     const { img } = currentGarment;
 
-    // Fit canvas to display area while preserving aspect ratio
-    const parent = canvas.parentElement;
-    const maxW = parent.clientWidth;
-    const maxH = parent.clientHeight;
+    const parent = stageRef.current;
+    const maxW = parent.clientWidth - 48;
+    const maxH = parent.clientHeight - 48;
     const scale = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight);
     const w = img.naturalWidth * scale;
     const h = img.naturalHeight * scale;
@@ -302,6 +304,7 @@ export default function App() {
       const targetW = p.widthPct * w;
       const aspect = currentLogo.img.naturalHeight / currentLogo.img.naturalWidth;
       const targetH = targetW * aspect;
+
       ctx.save();
       ctx.globalAlpha = p.opacity;
       ctx.globalCompositeOperation = p.blend;
@@ -310,67 +313,179 @@ export default function App() {
       ctx.drawImage(currentLogo.img, -targetW / 2, -targetH / 2, targetW, targetH);
       ctx.restore();
 
-      // Selection outline
+      // Selection frame + handles
       ctx.save();
       ctx.translate(p.xPct * w, p.yPct * h);
       ctx.rotate((p.rotation * Math.PI) / 180);
-      ctx.strokeStyle = '#E4572E';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([6, 4]);
+
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
       ctx.strokeRect(-targetW / 2, -targetH / 2, targetW, targetH);
-      // corner handles
       ctx.setLineDash([]);
-      ctx.fillStyle = '#E4572E';
+
+      // Corner resize handles (white square with black outline — clear on any bg)
       const handles = [
         [-targetW / 2, -targetH / 2],
         [ targetW / 2, -targetH / 2],
         [-targetW / 2,  targetH / 2],
         [ targetW / 2,  targetH / 2],
       ];
-      handles.forEach(([hx, hy]) => ctx.fillRect(hx - 4, hy - 4, 8, 8));
+      handles.forEach(([hx, hy]) => {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(hx - HANDLE_SIZE/2, hy - HANDLE_SIZE/2, HANDLE_SIZE, HANDLE_SIZE);
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(hx - HANDLE_SIZE/2, hy - HANDLE_SIZE/2, HANDLE_SIZE, HANDLE_SIZE);
+      });
+
+      // Rotation handle (circle above top of box)
+      const rotY = -targetH / 2 - 28;
+      ctx.beginPath();
+      ctx.moveTo(0, -targetH / 2);
+      ctx.lineTo(0, rotY);
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, rotY, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fill();
+      ctx.strokeStyle = '#000000';
+      ctx.stroke();
+
       ctx.restore();
     }
   }, [currentGarment, currentLogo, garments]);
 
-  // Re-render on window resize
   useEffect(() => {
-    const onResize = () => {
-      // force re-render via state ping
-      setGarments(g => [...g]);
-    };
+    const onResize = () => setGarments(g => [...g]);
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // ──────── Canvas drag interaction ────────
-  const onCanvasMouseDown = (e) => {
-    if (!currentGarment || !currentLogo) return;
+  // ──────── Canvas interaction ────────
+  const getMouse = (e) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
-    const px = (e.clientX - rect.left) / rect.width;
-    const py = (e.clientY - rect.top) / rect.height;
-    dragState.current = {
-      startX: px, startY: py,
-      origX: currentGarment.placement.xPct,
-      origY: currentGarment.placement.yPct,
+    return {
+      cx: (e.clientX - rect.left) * (canvas.width / rect.width),
+      cy: (e.clientY - rect.top) * (canvas.height / rect.height),
     };
   };
-  const onCanvasMouseMove = (e) => {
-    if (!dragState.current || !currentGarment) return;
+
+  const hitTest = (cx, cy) => {
+    if (!currentGarment || !currentLogo) return null;
     const canvas = canvasRef.current;
-    const rect = canvas.getBoundingClientRect();
-    const px = (e.clientX - rect.left) / rect.width;
-    const py = (e.clientY - rect.top) / rect.height;
-    const dx = px - dragState.current.startX;
-    const dy = py - dragState.current.startY;
-    updatePlacement(currentGarment.id, {
-      xPct: Math.max(0, Math.min(1, dragState.current.origX + dx)),
-      yPct: Math.max(0, Math.min(1, dragState.current.origY + dy)),
-    });
+    const w = canvas.width, h = canvas.height;
+    const p = currentGarment.placement;
+    const targetW = p.widthPct * w;
+    const aspect = currentLogo.img.naturalHeight / currentLogo.img.naturalWidth;
+    const targetH = targetW * aspect;
+    const rot = (p.rotation * Math.PI) / 180;
+
+    const dx = cx - p.xPct * w;
+    const dy = cy - p.yPct * h;
+    const cos = Math.cos(-rot), sin = Math.sin(-rot);
+    const lx = dx * cos - dy * sin;
+    const ly = dx * sin + dy * cos;
+
+    const rotY = -targetH / 2 - 28;
+    if (Math.hypot(lx - 0, ly - rotY) < 10) return 'rotate';
+
+    const corners = [
+      [-targetW/2, -targetH/2, 'nw'],
+      [ targetW/2, -targetH/2, 'ne'],
+      [-targetW/2,  targetH/2, 'sw'],
+      [ targetW/2,  targetH/2, 'se'],
+    ];
+    for (const [hx, hy, dir] of corners) {
+      if (Math.abs(lx - hx) <= HANDLE_SIZE && Math.abs(ly - hy) <= HANDLE_SIZE) {
+        return `corner-${dir}`;
+      }
+    }
+    if (Math.abs(lx) <= targetW/2 && Math.abs(ly) <= targetH/2) return 'move';
+    return null;
   };
-  const onCanvasMouseUp = () => { dragState.current = null; };
+
+  const onCanvasMouseDown = (e) => {
+    if (!currentGarment || !currentLogo) return;
+    const { cx, cy } = getMouse(e);
+    const hit = hitTest(cx, cy);
+    if (!hit) return;
+    interaction.current = {
+      mode: hit,
+      startCx: cx, startCy: cy,
+      startPlacement: { ...currentGarment.placement },
+    };
+  };
+
+  const onCanvasMouseMove = (e) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !currentGarment) return;
+    const { cx, cy } = getMouse(e);
+
+    if (!interaction.current && currentLogo) {
+      const hit = hitTest(cx, cy);
+      if (hit === 'move') canvas.style.cursor = 'grab';
+      else if (hit === 'rotate') canvas.style.cursor = 'crosshair';
+      else if (hit && hit.startsWith('corner-')) {
+        const dir = hit.slice(7);
+        canvas.style.cursor = (dir === 'nw' || dir === 'se') ? 'nwse-resize' : 'nesw-resize';
+      } else canvas.style.cursor = 'default';
+    }
+
+    if (!interaction.current) return;
+    const { mode, startCx, startCy, startPlacement } = interaction.current;
+    const w = canvas.width, h = canvas.height;
+
+    if (mode === 'move') {
+      const dx = (cx - startCx) / w;
+      const dy = (cy - startCy) / h;
+      updatePlacement(currentGarment.id, {
+        xPct: Math.max(0, Math.min(1, startPlacement.xPct + dx)),
+        yPct: Math.max(0, Math.min(1, startPlacement.yPct + dy)),
+      });
+    } else if (mode === 'rotate') {
+      const centerX = startPlacement.xPct * w;
+      const centerY = startPlacement.yPct * h;
+      const angle = Math.atan2(cy - centerY, cx - centerX) * 180 / Math.PI;
+      let newRot = angle + 90;
+      if (newRot > 180) newRot -= 360;
+      if (newRot < -180) newRot += 360;
+      updatePlacement(currentGarment.id, { rotation: Math.round(newRot) });
+    } else if (mode.startsWith('corner-')) {
+      const centerX = startPlacement.xPct * w;
+      const centerY = startPlacement.yPct * h;
+      const d0 = Math.hypot(startCx - centerX, startCy - centerY);
+      const d1 = Math.hypot(cx - centerX, cy - centerY);
+      if (d0 > 2) {
+        const ratio = d1 / d0;
+        const newW = Math.max(0.03, Math.min(0.98, startPlacement.widthPct * ratio));
+        updatePlacement(currentGarment.id, { widthPct: newW });
+      }
+    }
+  };
+
+  const onCanvasMouseUp = () => { interaction.current = null; };
 
   // ──────── Export ────────
+  const exportSingle = () => {
+    if (!currentGarment || !currentLogo) return;
+    const dataUrl = composeMockup(currentGarment, currentLogo.img, currentGarment.placement);
+    const placementId = placementZoneId(currentGarment.type, currentGarment.placement);
+    const filename = buildFilename({
+      prefix: filenamePrefix,
+      type: currentGarment.type,
+      placement: placementId,
+      index: garments.findIndex(g => g.id === currentGarment.id),
+    });
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = filename;
+    a.click();
+  };
+
   const exportAll = async () => {
     if (!garments.length || !currentLogo) return;
     setExporting(true);
@@ -379,10 +494,14 @@ export default function App() {
     for (let i = 0; i < garments.length; i++) {
       const g = garments[i];
       const dataUrl = composeMockup(g, currentLogo.img, g.placement);
-      files.push({
-        name: `mockup_${String(i + 1).padStart(2, '0')}_${g.name.replace(/\.[^.]+$/, '')}.png`,
-        data: dataUrlToBytes(dataUrl),
+      const placementId = placementZoneId(g.type, g.placement);
+      const filename = buildFilename({
+        prefix: filenamePrefix,
+        type: g.type,
+        placement: placementId,
+        index: i,
       });
+      files.push({ name: filename, data: dataUrlToBytes(dataUrl) });
       setExportProgress(Math.round(((i + 1) / garments.length) * 100));
       await new Promise(r => setTimeout(r, 10));
     }
@@ -390,179 +509,206 @@ export default function App() {
     const url = URL.createObjectURL(zip);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `merch-mockups-${Date.now()}.zip`;
+    a.download = `${slugify(filenamePrefix) || 'mockups'}-${Date.now()}.zip`;
     a.click();
     URL.revokeObjectURL(url);
     setExporting(false);
     setExportProgress(0);
   };
 
-  const exportSingle = () => {
-    if (!currentGarment || !currentLogo) return;
-    const dataUrl = composeMockup(currentGarment, currentLogo.img, currentGarment.placement);
-    const a = document.createElement('a');
-    a.href = dataUrl;
-    a.download = `mockup_${currentGarment.name.replace(/\.[^.]+$/, '')}.png`;
-    a.click();
-  };
-
   const p = currentGarment?.placement;
 
+  const previewFilename = currentGarment
+    ? buildFilename({
+        prefix: filenamePrefix,
+        type: currentGarment.type,
+        placement: placementZoneId(currentGarment.type, currentGarment.placement),
+        index: garments.findIndex(g => g.id === currentGarment.id),
+      })
+    : '';
+
   return (
-    <div
-      className="min-h-screen w-full"
-      style={{
-        background: '#F2EDE4',
-        color: '#1A1714',
-        fontFamily: "'Fraunces', Georgia, serif",
-        backgroundImage: `
-          radial-gradient(circle at 20% 10%, rgba(228, 87, 46, 0.04), transparent 45%),
-          radial-gradient(circle at 85% 80%, rgba(26, 23, 20, 0.05), transparent 50%)
-        `,
-      }}
-    >
+    <div className="min-h-screen w-full bg-white text-black"
+      style={{ fontFamily: "'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif" }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,700;9..144,900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         * { box-sizing: border-box; }
         body { margin: 0; }
-        .mono { font-family: 'JetBrains Mono', monospace; }
-        .btn-primary {
-          background: #1A1714; color: #F2EDE4;
-          border: 1px solid #1A1714;
-          transition: all 150ms ease;
-          letter-spacing: 0.02em;
+        .label {
+          font-size: 11px; text-transform: uppercase;
+          letter-spacing: 0.08em; font-weight: 500; color: #000;
         }
-        .btn-primary:hover:not(:disabled) { background: #E4572E; border-color: #E4572E; }
-        .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
-        .btn-ghost {
-          background: transparent; color: #1A1714;
-          border: 1px solid rgba(26,23,20,0.25);
-          transition: all 150ms ease;
+        .label-muted { color: #666; }
+        .hairline { border-top: 1px solid #E5E5E5; }
+        .btn {
+          padding: 8px 14px; font-size: 12px; font-weight: 500;
+          transition: all 120ms ease; cursor: pointer;
+          letter-spacing: 0.02em; border-radius: 0;
         }
-        .btn-ghost:hover:not(:disabled) {
-          background: #1A1714; color: #F2EDE4; border-color: #1A1714;
+        .btn-primary { background: #000; color: #fff; border: 1px solid #000; }
+        .btn-primary:hover:not(:disabled) { background: #333; border-color: #333; }
+        .btn-primary:disabled { background: #CCC; border-color: #CCC; cursor: not-allowed; }
+        .btn-ghost { background: #fff; color: #000; border: 1px solid #000; }
+        .btn-ghost:hover:not(:disabled) { background: #000; color: #fff; }
+        .btn-ghost:disabled { border-color: #CCC; color: #CCC; cursor: not-allowed; }
+        .btn-text {
+          background: transparent; border: none; padding: 0;
+          font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+          font-weight: 500; cursor: pointer; color: #000;
         }
-        .btn-ghost:disabled { opacity: 0.35; cursor: not-allowed; }
+        .btn-text:hover { text-decoration: underline; text-underline-offset: 3px; }
         .thumb {
-          transition: all 180ms ease;
-          border: 1.5px solid rgba(26,23,20,0.15);
+          border: 1px solid #E5E5E5;
+          transition: all 150ms; background: #fff;
         }
-        .thumb:hover { border-color: #1A1714; }
-        .thumb.active {
-          border-color: #E4572E;
-          box-shadow: 0 0 0 3px rgba(228,87,46,0.18);
-        }
+        .thumb:hover { border-color: #000; }
+        .thumb.active { border-color: #000; border-width: 2px; }
         .zone-btn {
-          background: transparent;
-          border: 1px dashed rgba(26,23,20,0.35);
-          transition: all 150ms;
-          letter-spacing: 0.05em;
-          text-transform: uppercase;
-          font-size: 10px;
+          background: #fff; color: #000;
+          border: 1px solid #E5E5E5;
+          transition: all 120ms;
+          font-size: 11px; padding: 8px 6px;
+          font-weight: 500; cursor: pointer;
         }
-        .zone-btn:hover { background: #1A1714; color: #F2EDE4; border-style: solid; border-color: #1A1714; }
+        .zone-btn:hover { border-color: #000; background: #F7F7F7; }
+        .zone-btn.active { background: #000; color: #fff; border-color: #000; }
         .slider {
           -webkit-appearance: none; appearance: none;
           background: transparent; width: 100%; height: 22px;
         }
-        .slider::-webkit-slider-runnable-track {
-          height: 1px; background: #1A1714;
-        }
-        .slider::-moz-range-track { height: 1px; background: #1A1714; }
+        .slider::-webkit-slider-runnable-track { height: 1px; background: #000; }
+        .slider::-moz-range-track { height: 1px; background: #000; }
         .slider::-webkit-slider-thumb {
           -webkit-appearance: none; appearance: none;
-          width: 14px; height: 14px;
-          background: #E4572E;
-          border: 2px solid #1A1714;
-          margin-top: -7px; cursor: grab;
-          border-radius: 0;
+          width: 14px; height: 14px; background: #000;
+          margin-top: -7px; cursor: grab; border-radius: 50%;
+          border: none;
         }
         .slider::-moz-range-thumb {
-          width: 14px; height: 14px;
-          background: #E4572E; border: 2px solid #1A1714;
-          cursor: grab; border-radius: 0;
+          width: 14px; height: 14px; background: #000;
+          cursor: grab; border-radius: 50%; border: none;
         }
         .drop-zone {
-          border: 1.5px dashed rgba(26,23,20,0.3);
-          transition: all 200ms;
+          border: 1px dashed #CCC;
+          transition: all 150ms; cursor: pointer;
+          background: #FAFAFA;
         }
-        .drop-zone:hover {
-          border-color: #E4572E;
-          background: rgba(228,87,46,0.04);
-        }
+        .drop-zone:hover { border-color: #000; background: #F2F2F2; }
         .canvas-stage {
+          background-color: #FAFAFA;
           background-image:
-            linear-gradient(45deg, rgba(26,23,20,0.04) 25%, transparent 25%),
-            linear-gradient(-45deg, rgba(26,23,20,0.04) 25%, transparent 25%),
-            linear-gradient(45deg, transparent 75%, rgba(26,23,20,0.04) 75%),
-            linear-gradient(-45deg, transparent 75%, rgba(26,23,20,0.04) 75%);
+            linear-gradient(#EEE 1px, transparent 1px),
+            linear-gradient(90deg, #EEE 1px, transparent 1px);
           background-size: 20px 20px;
-          background-position: 0 0, 0 10px, 10px -10px, -10px 0;
         }
-        .rule::after {
-          content: ''; display: block;
-          height: 1px; background: #1A1714;
-          margin-top: 6px;
+        input[type="text"] {
+          width: 100%; padding: 8px 10px;
+          border: 1px solid #E5E5E5; background: #fff;
+          font-size: 13px; font-family: inherit;
+          border-radius: 0; outline: none;
+          transition: border-color 120ms;
         }
+        input[type="text"]:focus { border-color: #000; }
         select {
-          background: transparent;
-          font-family: inherit;
+          background: transparent; font-family: inherit;
+          font-size: 11px; text-transform: uppercase;
+          letter-spacing: 0.04em; color: #666;
+          border: none; outline: none; padding: 0;
+          cursor: pointer;
         }
+        .mono { font-family: 'SF Mono', ui-monospace, Menlo, monospace; }
       `}</style>
 
-      {/* ─── HEADER ─── */}
-      <header className="border-b border-black/15">
-        <div className="max-w-[1600px] mx-auto px-8 py-5 flex items-center justify-between">
-          <div className="flex items-baseline gap-4">
-            <div className="flex items-center gap-2">
-              <div className="w-2.5 h-2.5" style={{ background: '#E4572E' }} />
-              <span className="mono text-[11px] tracking-[0.3em] uppercase">Atelier</span>
+      {/* HEADER */}
+      <header className="border-b border-black/10">
+        <div className="max-w-[1600px] mx-auto px-8 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-8">
+            <div className="flex items-center gap-3">
+              <div className="w-3 h-3 bg-black" />
+              <h1 className="text-lg font-semibold tracking-tight">Merch Mockup Studio</h1>
             </div>
-            <h1 className="text-2xl font-black tracking-tight" style={{ fontStretch: '110%' }}>
-              Merch Mockup Studio
-            </h1>
-            <span className="mono text-[10px] uppercase tracking-widest text-black/50 hidden md:inline">
-              — Phase&nbsp;01 / Canvas Engine
-            </span>
+            <span className="label label-muted hidden md:inline">Phase 01 / Canvas</span>
           </div>
           <div className="flex items-center gap-2">
             <button
-              className="btn-ghost px-4 py-2 mono text-[11px] uppercase tracking-widest flex items-center gap-2"
+              className="btn btn-ghost flex items-center gap-2"
+              onClick={() => setShowExportPanel(s => !s)}
+            >
+              <Settings size={13} /> Export Settings
+            </button>
+            <button
+              className="btn btn-ghost flex items-center gap-2"
               onClick={exportSingle}
               disabled={!currentGarment || !currentLogo}
             >
-              <Download size={14} /> Current
+              <Download size={13} /> Current
             </button>
             <button
-              className="btn-primary px-5 py-2 mono text-[11px] uppercase tracking-widest flex items-center gap-2"
+              className="btn btn-primary flex items-center gap-2"
               onClick={exportAll}
               disabled={!garments.length || !currentLogo || exporting}
             >
-              <Package size={14} />
-              {exporting ? `Packing ${exportProgress}%` : `Export ${garments.length || ''} ZIP`}
+              <Package size={13} />
+              {exporting ? `${exportProgress}%` : `Export ${garments.length || 0} as ZIP`}
             </button>
           </div>
         </div>
+
+        {showExportPanel && (
+          <div className="border-t border-black/10 bg-[#FAFAFA]">
+            <div className="max-w-[1600px] mx-auto px-8 py-5 grid grid-cols-12 gap-6 items-start">
+              <div className="col-span-12 md:col-span-4">
+                <label className="label block mb-2">Filename prefix</label>
+                <input
+                  type="text"
+                  value={filenamePrefix}
+                  onChange={e => setFilenamePrefix(e.target.value)}
+                  placeholder="my-brand"
+                />
+                <p className="text-xs text-black/50 mt-1.5">
+                  SEO prefix used on every exported image.
+                </p>
+              </div>
+              <div className="col-span-12 md:col-span-5">
+                <label className="label block mb-2">Filename pattern</label>
+                <div className="mono text-xs p-3 border border-black/10 bg-white">
+                  <span className="text-black/40">{'{'}</span>prefix<span className="text-black/40">{'}'}</span>
+                  <span className="text-black/40">-</span>
+                  <span className="text-black/40">{'{'}</span>type<span className="text-black/40">{'}'}</span>
+                  <span className="text-black/40">-</span>
+                  <span className="text-black/40">{'{'}</span>placement<span className="text-black/40">{'}'}</span>
+                  <span className="text-black/40">-</span>
+                  <span className="text-black/40">{'{'}</span>index<span className="text-black/40">{'}'}</span>.png
+                </div>
+                <p className="text-xs text-black/50 mt-1.5">
+                  Types: tshirt, hoodie, cap, other · Placements: chest-center, left-chest, right-chest, full-front, back-center, hood, front, side, back, center, custom
+                </p>
+              </div>
+              <div className="col-span-12 md:col-span-3">
+                <label className="label block mb-2">Preview</label>
+                <div className="mono text-xs p-3 border border-black/10 bg-white break-all">
+                  {previewFilename || <span className="text-black/40">No garment selected</span>}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </header>
 
-      {/* ─── MAIN LAYOUT ─── */}
+      {/* MAIN */}
       <div className="max-w-[1600px] mx-auto px-8 py-6 grid grid-cols-12 gap-6">
 
-        {/* ─── LEFT SIDEBAR: GARMENTS & LOGOS ─── */}
-        <aside className="col-span-12 lg:col-span-3 space-y-6">
-
-          {/* Garments panel */}
+        {/* LEFT */}
+        <aside className="col-span-12 lg:col-span-3 space-y-8">
           <section>
-            <div className="rule flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <Shirt size={14} />
-                <h2 className="mono text-[10px] uppercase tracking-[0.25em] font-bold">
-                  Garments · {garments.length}
-                </h2>
+                <Shirt size={13} />
+                <h2 className="label">Garments · {garments.length}</h2>
               </div>
               <button
                 onClick={() => garmentInput.current.click()}
-                className="mono text-[10px] uppercase tracking-widest hover:text-[#E4572E]"
+                className="btn-text"
               >
                 + Add
               </button>
@@ -574,19 +720,15 @@ export default function App() {
             </div>
 
             {garments.length === 0 && (
-              <div
-                className="drop-zone p-6 text-center cursor-pointer"
-                onClick={() => garmentInput.current.click()}
-              >
-                <Upload size={20} className="mx-auto mb-2 opacity-50" />
-                <p className="text-sm italic">Drop garment photos</p>
-                <p className="mono text-[10px] uppercase tracking-widest opacity-50 mt-1">
-                  JPG · PNG · WebP
-                </p>
+              <div className="drop-zone p-8 text-center"
+                onClick={() => garmentInput.current.click()}>
+                <Upload size={18} className="mx-auto mb-2 opacity-40" />
+                <p className="text-sm">Drop garment photos</p>
+                <p className="label label-muted mt-1">JPG · PNG · WEBP</p>
               </div>
             )}
 
-            <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
+            <div className="space-y-2 max-h-[340px] overflow-y-auto">
               {garments.map(g => (
                 <div
                   key={g.id}
@@ -603,7 +745,6 @@ export default function App() {
                         const newType = e.target.value;
                         setGarments(prev => prev.map(x => x.id === g.id ? { ...x, type: newType } : x));
                       }}
-                      className="mono text-[10px] uppercase tracking-widest border-none outline-none bg-transparent p-0"
                     >
                       {GARMENT_TYPES.map(t => (
                         <option key={t.id} value={t.id}>{t.label}</option>
@@ -612,27 +753,24 @@ export default function App() {
                   </div>
                   <button
                     onClick={e => { e.stopPropagation(); removeGarment(g.id); }}
-                    className="opacity-40 hover:opacity-100 hover:text-[#E4572E]"
+                    className="opacity-30 hover:opacity-100"
                   >
-                    <Trash2 size={14} />
+                    <Trash2 size={13} />
                   </button>
                 </div>
               ))}
             </div>
           </section>
 
-          {/* Logos panel */}
           <section>
-            <div className="rule flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <ImageIcon size={14} />
-                <h2 className="mono text-[10px] uppercase tracking-[0.25em] font-bold">
-                  Logos · {logos.length}
-                </h2>
+                <ImageIcon size={13} />
+                <h2 className="label">Logos · {logos.length}</h2>
               </div>
               <button
                 onClick={() => logoInput.current.click()}
-                className="mono text-[10px] uppercase tracking-widest hover:text-[#E4572E]"
+                className="btn-text"
               >
                 + Add
               </button>
@@ -644,15 +782,11 @@ export default function App() {
             </div>
 
             {logos.length === 0 && (
-              <div
-                className="drop-zone p-6 text-center cursor-pointer"
-                onClick={() => logoInput.current.click()}
-              >
-                <Upload size={20} className="mx-auto mb-2 opacity-50" />
-                <p className="text-sm italic">Drop your logo</p>
-                <p className="mono text-[10px] uppercase tracking-widest opacity-50 mt-1">
-                  PNG with transparency
-                </p>
+              <div className="drop-zone p-8 text-center"
+                onClick={() => logoInput.current.click()}>
+                <Upload size={18} className="mx-auto mb-2 opacity-40" />
+                <p className="text-sm">Drop your logo</p>
+                <p className="label label-muted mt-1">PNG (transparent)</p>
               </div>
             )}
 
@@ -660,14 +794,19 @@ export default function App() {
               {logos.map(l => (
                 <div
                   key={l.id}
-                  className={`thumb relative cursor-pointer aspect-square p-2 canvas-stage ${activeLogo === l.id ? 'active' : ''}`}
+                  className={`thumb relative cursor-pointer aspect-square p-2 ${activeLogo === l.id ? 'active' : ''}`}
+                  style={{
+                    backgroundImage:
+                      'linear-gradient(45deg, #F2F2F2 25%, transparent 25%), linear-gradient(-45deg, #F2F2F2 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #F2F2F2 75%), linear-gradient(-45deg, transparent 75%, #F2F2F2 75%)',
+                    backgroundSize: '10px 10px',
+                    backgroundPosition: '0 0, 0 5px, 5px -5px, -5px 0',
+                  }}
                   onClick={() => setActiveLogo(l.id)}
                 >
                   <img src={l.url} alt={l.name} className="w-full h-full object-contain" />
                   <button
                     onClick={e => { e.stopPropagation(); removeLogo(l.id); }}
-                    className="absolute top-1 right-1 bg-[#1A1714] text-[#F2EDE4] w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
-                    style={{ opacity: 0.8 }}
+                    className="absolute top-1 right-1 bg-black text-white w-5 h-5 flex items-center justify-center"
                   >
                     <X size={10} />
                   </button>
@@ -677,34 +816,26 @@ export default function App() {
           </section>
         </aside>
 
-        {/* ─── CENTER: CANVAS ─── */}
+        {/* CENTER */}
         <main className="col-span-12 lg:col-span-6">
-          <div className="rule flex items-center justify-between mb-3">
-            <h2 className="mono text-[10px] uppercase tracking-[0.25em] font-bold flex items-center gap-2">
-              <Target size={14} /> Preview
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="label flex items-center gap-2">
+              <Target size={13} /> Preview
             </h2>
             {currentGarment && (
-              <span className="mono text-[10px] uppercase tracking-widest opacity-60">
-                {currentGarment.name}
-              </span>
+              <span className="label label-muted truncate max-w-[60%]">{currentGarment.name}</span>
             )}
           </div>
 
           <div
-            className="canvas-stage flex items-center justify-center"
-            style={{
-              minHeight: '560px',
-              border: '1px solid rgba(26,23,20,0.2)',
-              padding: '24px',
-            }}
+            ref={stageRef}
+            className="canvas-stage flex items-center justify-center border border-black/10"
+            style={{ minHeight: '620px', padding: '24px' }}
           >
             {!currentGarment ? (
-              <div className="text-center opacity-50">
-                <Shirt size={48} className="mx-auto mb-4" />
-                <p className="italic text-lg">Add a garment photo to begin.</p>
-                <p className="mono text-[10px] uppercase tracking-widest mt-2">
-                  Upload → Select → Place
-                </p>
+              <div className="text-center text-black/40">
+                <Shirt size={40} className="mx-auto mb-4" strokeWidth={1} />
+                <p className="text-sm">Add a garment photo to begin</p>
               </div>
             ) : (
               <canvas
@@ -713,74 +844,70 @@ export default function App() {
                 onMouseMove={onCanvasMouseMove}
                 onMouseUp={onCanvasMouseUp}
                 onMouseLeave={onCanvasMouseUp}
-                style={{ cursor: currentLogo ? 'grab' : 'default' }}
+                style={{ cursor: 'default' }}
               />
             )}
           </div>
 
           {currentGarment && currentLogo && (
-            <p className="mono text-[10px] uppercase tracking-widest opacity-50 mt-3">
-              Drag on canvas to reposition · Use controls on the right to refine
+            <p className="label label-muted mt-3">
+              Drag to move · Drag corners to resize · Drag top circle to rotate
             </p>
           )}
         </main>
 
-        {/* ─── RIGHT: CONTROLS ─── */}
-        <aside className="col-span-12 lg:col-span-3 space-y-5">
+        {/* RIGHT */}
+        <aside className="col-span-12 lg:col-span-3 space-y-6">
           {!currentGarment || !currentLogo ? (
-            <div className="opacity-50">
-              <div className="rule mb-3">
-                <h2 className="mono text-[10px] uppercase tracking-[0.25em] font-bold flex items-center gap-2">
-                  <Sliders size={14} /> Controls
-                </h2>
-              </div>
-              <p className="italic text-sm">
+            <div className="text-black/40">
+              <h2 className="label mb-3 text-black flex items-center gap-2">
+                <Sliders size={13} /> Controls
+              </h2>
+              <p className="text-sm">
                 Add at least one garment and one logo to unlock placement.
               </p>
             </div>
           ) : (
             <>
-              {/* Preset zones */}
               <section>
-                <div className="rule mb-3">
-                  <h3 className="mono text-[10px] uppercase tracking-[0.25em] font-bold">
-                    Preset zones · {GARMENT_TYPES.find(t => t.id === currentGarment.type)?.label}
-                  </h3>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {PRESET_ZONES[currentGarment.type].map(z => (
-                    <button
-                      key={z.id}
-                      className="zone-btn py-2 px-2"
-                      onClick={() => applyPresetZone(z)}
-                    >
-                      {z.label}
-                    </button>
-                  ))}
+                <h3 className="label mb-3">
+                  Preset zones — {GARMENT_TYPES.find(t => t.id === currentGarment.type)?.label}
+                </h3>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {PRESET_ZONES[currentGarment.type].map(z => {
+                    const isActive = placementZoneId(currentGarment.type, p) === z.id;
+                    return (
+                      <button
+                        key={z.id}
+                        className={`zone-btn ${isActive ? 'active' : ''}`}
+                        onClick={() => applyPresetZone(z)}
+                      >
+                        {z.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </section>
 
-              {/* Size */}
               <section>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="mono text-[10px] uppercase tracking-widest">Size</label>
-                  <span className="mono text-[10px]">{Math.round(p.widthPct * 100)}%</span>
+                  <label className="label">Size</label>
+                  <span className="label label-muted">{Math.round(p.widthPct * 100)}%</span>
                 </div>
                 <input
                   type="range" className="slider"
-                  min={5} max={95} step={1}
+                  min={3} max={98} step={1}
                   value={p.widthPct * 100}
                   onChange={e => updatePlacement(currentGarment.id, { widthPct: +e.target.value / 100 })}
                 />
               </section>
 
-              {/* Rotation */}
               <section>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="mono text-[10px] uppercase tracking-widest flex items-center gap-1">
+                  <label className="label flex items-center gap-1">
                     <RotateCw size={10} /> Rotate
                   </label>
-                  <span className="mono text-[10px]">{p.rotation}°</span>
+                  <span className="label label-muted">{p.rotation}°</span>
                 </div>
                 <input
                   type="range" className="slider"
@@ -789,18 +916,17 @@ export default function App() {
                   onChange={e => updatePlacement(currentGarment.id, { rotation: +e.target.value })}
                 />
                 <button
-                  className="mono text-[10px] uppercase tracking-widest opacity-60 hover:opacity-100 hover:text-[#E4572E] mt-1"
+                  className="btn-text label-muted mt-1"
                   onClick={() => updatePlacement(currentGarment.id, { rotation: 0 })}
                 >
-                  reset
+                  Reset
                 </button>
               </section>
 
-              {/* Opacity */}
               <section>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="mono text-[10px] uppercase tracking-widest">Opacity</label>
-                  <span className="mono text-[10px]">{Math.round(p.opacity * 100)}%</span>
+                  <label className="label">Opacity</label>
+                  <span className="label label-muted">{Math.round(p.opacity * 100)}%</span>
                 </div>
                 <input
                   type="range" className="slider"
@@ -810,18 +936,15 @@ export default function App() {
                 />
               </section>
 
-              {/* Blend */}
               <section>
-                <div className="rule mb-2">
-                  <label className="mono text-[10px] uppercase tracking-widest flex items-center gap-1">
-                    <Layers size={10} /> Blend Mode
-                  </label>
-                </div>
+                <label className="label flex items-center gap-1 mb-2">
+                  <Layers size={10} /> Blend Mode
+                </label>
                 <div className="grid grid-cols-3 gap-1">
                   {BLEND_MODES.map(b => (
                     <button
                       key={b.id}
-                      className={`py-1.5 mono text-[9px] uppercase tracking-widest border ${p.blend === b.id ? 'bg-[#1A1714] text-[#F2EDE4] border-[#1A1714]' : 'border-black/25 hover:border-black'}`}
+                      className={`zone-btn ${p.blend === b.id ? 'active' : ''}`}
                       onClick={() => updatePlacement(currentGarment.id, { blend: b.id })}
                     >
                       {b.label}
@@ -830,25 +953,22 @@ export default function App() {
                 </div>
               </section>
 
-              {/* Batch */}
               <section>
-                <div className="rule mb-2">
-                  <h3 className="mono text-[10px] uppercase tracking-[0.25em] font-bold flex items-center gap-1">
-                    <Copy size={12} /> Batch apply
-                  </h3>
-                </div>
+                <h3 className="label mb-2 flex items-center gap-1">
+                  <Copy size={11} /> Batch apply
+                </h3>
                 <button
-                  className="btn-ghost w-full py-2 mono text-[10px] uppercase tracking-widest mb-2 flex items-center justify-center gap-2"
+                  className="btn btn-ghost w-full mb-1.5 flex items-center justify-center gap-2"
                   onClick={applyToAllSameType}
                 >
-                  Apply to all {GARMENT_TYPES.find(t => t.id === currentGarment.type)?.label}s
+                  <span>All {GARMENT_TYPES.find(t => t.id === currentGarment.type)?.label}s</span>
                   <ChevronRight size={12} />
                 </button>
                 <button
-                  className="btn-ghost w-full py-2 mono text-[10px] uppercase tracking-widest flex items-center justify-center gap-2"
+                  className="btn btn-ghost w-full flex items-center justify-center gap-2"
                   onClick={applyToAll}
                 >
-                  Apply to ALL garments
+                  <span>Every garment</span>
                   <ChevronRight size={12} />
                 </button>
               </section>
@@ -857,11 +977,10 @@ export default function App() {
         </aside>
       </div>
 
-      {/* ─── FOOTER ─── */}
-      <footer className="border-t border-black/15 mt-10">
-        <div className="max-w-[1600px] mx-auto px-8 py-4 flex items-center justify-between mono text-[10px] uppercase tracking-widest opacity-60">
-          <span>All compositing happens in your browser · Nothing uploaded</span>
-          <span>Phase 01 · Canvas Engine · v0.1</span>
+      <footer className="hairline mt-10">
+        <div className="max-w-[1600px] mx-auto px-8 py-5 flex items-center justify-between label label-muted">
+          <span>All compositing runs in your browser. Nothing is uploaded.</span>
+          <span>v0.2 · Canvas Engine</span>
         </div>
       </footer>
     </div>
