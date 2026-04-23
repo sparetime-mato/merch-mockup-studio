@@ -1,12 +1,13 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Download, X, RotateCw, Copy, Layers, Image as ImageIcon, Shirt, Trash2, ChevronRight, ChevronDown, Target, Sliders, Package, Settings, GripVertical, Pencil, Check, Sparkles, Loader2, Eye, EyeOff, Zap, ZoomIn } from 'lucide-react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Upload, Download, X, RotateCw, Copy, Layers, Image as ImageIcon, Shirt, Trash2, ChevronRight, ChevronDown, Target, Sliders, Package, Settings, GripVertical, Pencil, Check, Sparkles, Loader2, Eye, EyeOff, Zap, ZoomIn, CheckSquare, Square } from 'lucide-react';
 
 // ───────────────────────────────────────────────────────────────
-// Merch Mockup Studio — Phase 2.1
-// + Collapsible Advanced section (rotate/skew)
-// + Canvas shows AI result with toggle
-// + Pinch-to-zoom / wheel zoom / reset
-// + Stronger preservation in AI prompt (see api/harmonize.js)
+// Merch Mockup Studio — Phase 2.2
+// + Original filename shown under display name
+// + Version field per garment, garments grouped by version
+// + "version" filename token
+// + Full-height layout — internal scrolling only, not the page
+// + Export selection (checkboxes) — only export selected garments
 // ───────────────────────────────────────────────────────────────
 
 const AI_ENABLED = (() => {
@@ -66,6 +67,7 @@ const BLEND_MODES = [
 
 const ALL_TOKENS = [
   { id: 'prefix',    label: 'Prefix' },
+  { id: 'version',   label: 'Version' },
   { id: 'gender',    label: 'Gender' },
   { id: 'type',      label: 'Garment Type' },
   { id: 'name',      label: 'Garment Name' },
@@ -75,12 +77,15 @@ const ALL_TOKENS = [
 
 const DEFAULT_TOKEN_ORDER = [
   { id: 'prefix',    enabled: true  },
+  { id: 'version',   enabled: true  },
   { id: 'gender',    enabled: true  },
   { id: 'type',      enabled: true  },
   { id: 'name',      enabled: true  },
   { id: 'placement', enabled: false },
   { id: 'index',     enabled: true  },
 ];
+
+const NO_VERSION = '__no_version__'; // sentinel for ungrouped
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -108,6 +113,14 @@ const guessGender = (name) => {
   return 'na';
 };
 
+// Try to detect a version token in the filename, e.g. "v1", "v2", "version-3"
+const guessVersion = (name) => {
+  const n = name.toLowerCase();
+  const m = n.match(/\bv(\d+)\b|\bversion[-_ ]?(\d+)\b/);
+  if (m) return `v${m[1] || m[2]}`;
+  return '';
+};
+
 const placementZoneId = (type, placement, tolerance = 0.02) => {
   const zones = PRESET_ZONES[type] || [];
   const hit = zones.find(z =>
@@ -122,6 +135,7 @@ const buildFilename = ({ tokens, prefix, garment, index, extension = 'png' }) =>
   const placement = placementZoneId(garment.type, garment.placement);
   const values = {
     prefix: slugify(prefix),
+    version: slugify(garment.version),
     gender: GENDERS.find(g => g.id === garment.gender)?.slug || '',
     type: slugify(garment.type),
     name: slugify(garment.displayName),
@@ -161,7 +175,6 @@ const composeMockup = (garment, logoImg, placement, maxDim = null) => {
   return canvas.toDataURL('image/png');
 };
 
-// Minimal ZIP (STORE)
 const buildZip = async (files) => {
   const encoder = new TextEncoder();
   const fileEntries = []; const centralEntries = []; let offset = 0;
@@ -274,8 +287,10 @@ export default function App() {
   const [tokens, setTokens] = useState(DEFAULT_TOKEN_ORDER);
   const [showExportPanel, setShowExportPanel] = useState(false);
   const [editingName, setEditingName] = useState(null);
+  const [editingVersion, setEditingVersion] = useState(null);
   const [tokenDragIndex, setTokenDragIndex] = useState(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [collapsedVersions, setCollapsedVersions] = useState(new Set());
 
   // AI state
   const [aiBusy, setAiBusy] = useState(false);
@@ -284,9 +299,9 @@ export default function App() {
   const [aiError, setAiError] = useState(null);
   const [compareOpen, setCompareOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
-  const [viewMode, setViewMode] = useState('auto'); // 'auto' | 'canvas' | 'ai' (per-user override)
+  const [viewMode, setViewMode] = useState('auto');
 
-  // Zoom state (for the canvas stage)
+  // Zoom state
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
 
@@ -296,16 +311,32 @@ export default function App() {
   const stageRef = useRef();
   const aiImgRef = useRef();
   const interaction = useRef(null);
-  const pinch = useRef(null); // for touch pinch
+  const pinch = useRef(null);
 
   const currentGarment = garments.find(g => g.id === activeGarment);
   const currentLogo = logos.find(l => l.id === activeLogo);
 
-  // Should we show AI result as the main preview?
   const showingAi = currentGarment?.aiResult && (
     viewMode === 'ai' ||
     (viewMode === 'auto' && currentGarment.useAiForExport)
   );
+
+  // ──────── Group garments by version ────────
+  const groupedGarments = useMemo(() => {
+    const groups = new Map();
+    garments.forEach(g => {
+      const key = g.version || NO_VERSION;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(g);
+    });
+    // Sort: defined versions in alpha order, "no version" group last
+    const sorted = [...groups.entries()].sort((a, b) => {
+      if (a[0] === NO_VERSION) return 1;
+      if (b[0] === NO_VERSION) return -1;
+      return a[0].localeCompare(b[0], undefined, { numeric: true });
+    });
+    return sorted;
+  }, [garments]);
 
   const handleGarmentUpload = async (files) => {
     const loaded = await Promise.all(Array.from(files).map(fileToImage));
@@ -313,7 +344,10 @@ export default function App() {
       ...l, id: uid(),
       type: guessType(l.name),
       gender: guessGender(l.name),
+      version: guessVersion(l.name),
       displayName: nameFromFilename(l.name),
+      originalName: l.name,
+      selected: true, // selected for export by default
       placement: { xPct: 0.5, yPct: 0.32, widthPct: 0.22, rotation: 0, opacity: 1, blend: 'source-over', skewX: 0, skewY: 0 },
       aiResult: null,
       useAiForExport: true,
@@ -376,6 +410,26 @@ export default function App() {
     }
   };
 
+  // Selection helpers
+  const toggleSelected = (id) => {
+    setGarments(prev => prev.map(g => g.id === id ? { ...g, selected: !g.selected } : g));
+  };
+  const setVersionSelected = (versionKey, selected) => {
+    setGarments(prev => prev.map(g =>
+      (g.version || NO_VERSION) === versionKey ? { ...g, selected } : g));
+  };
+  const selectAll = () => setGarments(prev => prev.map(g => ({ ...g, selected: true })));
+  const selectNone = () => setGarments(prev => prev.map(g => ({ ...g, selected: false })));
+
+  const toggleVersionCollapsed = (versionKey) => {
+    setCollapsedVersions(prev => {
+      const next = new Set(prev);
+      next.has(versionKey) ? next.delete(versionKey) : next.add(versionKey);
+      return next;
+    });
+  };
+
+  // Token reordering
   const onTokenDragStart = (i) => setTokenDragIndex(i);
   const onTokenDragOver = (e, i) => {
     e.preventDefault();
@@ -391,9 +445,9 @@ export default function App() {
   const onTokenDragEnd = () => setTokenDragIndex(null);
   const toggleToken = (id) => setTokens(prev => prev.map(t => t.id === id ? { ...t, enabled: !t.enabled } : t));
 
-  // Zoom helpers
+  // Zoom
   const resetZoom = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
-  useEffect(() => { resetZoom(); }, [activeGarment, showingAi]); // reset when switching views
+  useEffect(() => { resetZoom(); }, [activeGarment, showingAi]);
 
   // AI
   const harmonizeCurrent = async () => {
@@ -413,13 +467,15 @@ export default function App() {
   };
 
   const harmonizeAll = async () => {
-    if (!garments.length || !currentLogo) return;
+    // Only harmonize selected garments
+    const targets = garments.filter(g => g.selected);
+    if (!targets.length || !currentLogo) return;
     setAiBatchBusy(true); setAiBatchProgress(0); setAiError(null);
     try {
-      for (let i = 0; i < garments.length; i++) {
-        const g = garments[i];
+      for (let i = 0; i < targets.length; i++) {
+        const g = targets[i];
         if (g.aiResult) {
-          setAiBatchProgress(Math.round(((i + 1) / garments.length) * 100));
+          setAiBatchProgress(Math.round(((i + 1) / targets.length) * 100));
           continue;
         }
         try {
@@ -431,7 +487,7 @@ export default function App() {
         } catch (err) {
           console.error(`Harmonize failed for ${g.displayName}:`, err);
         }
-        setAiBatchProgress(Math.round(((i + 1) / garments.length) * 100));
+        setAiBatchProgress(Math.round(((i + 1) / targets.length) * 100));
       }
     } finally { setAiBatchBusy(false); setAiBatchProgress(0); }
   };
@@ -447,16 +503,15 @@ export default function App() {
       ? { ...g, useAiForExport: !g.useAiForExport } : g));
   };
 
-  // ──────── Canvas rendering (only runs when NOT showing AI) ────────
+  // Canvas rendering
   const HANDLE_SIZE = 10;
 
   useEffect(() => {
-    if (showingAi) return; // AI preview is rendered as <img>, not canvas
+    if (showingAi) return;
     const canvas = canvasRef.current;
     if (!canvas || !currentGarment) return;
     const ctx = canvas.getContext('2d');
     const { img } = currentGarment;
-
     const parent = stageRef.current;
     const maxW = parent.clientWidth - 48;
     const maxH = parent.clientHeight - 48;
@@ -465,10 +520,8 @@ export default function App() {
     const h = img.naturalHeight * scale;
     canvas.width = w; canvas.height = h;
     canvas.style.width = `${w}px`; canvas.style.height = `${h}px`;
-
     ctx.clearRect(0, 0, w, h);
     ctx.drawImage(img, 0, 0, w, h);
-
     if (currentLogo) {
       const p = currentGarment.placement;
       const targetW = p.widthPct * w;
@@ -482,7 +535,6 @@ export default function App() {
       ctx.transform(1, Math.tan((p.skewY * Math.PI) / 180), Math.tan((p.skewX * Math.PI) / 180), 1, 0, 0);
       ctx.drawImage(currentLogo.img, -targetW / 2, -targetH / 2, targetW, targetH);
       ctx.restore();
-
       ctx.save();
       ctx.translate(p.xPct * w, p.yPct * h);
       ctx.rotate((p.rotation * Math.PI) / 180);
@@ -516,7 +568,7 @@ export default function App() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // Canvas interactions (placement editing)
+  // Canvas interaction
   const getMouse = (e) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
@@ -601,10 +653,8 @@ export default function App() {
   };
   const onCanvasMouseUp = () => { interaction.current = null; };
 
-  // ──────── Zoom: wheel + pinch on stage ────────
+  // Zoom
   const onStageWheel = (e) => {
-    // Zoom when Ctrl/Cmd is held OR when the user has done a pinch (which browsers
-    // report as a wheel with ctrlKey=true). Plain scrolls pass through normally.
     if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault();
     const stage = stageRef.current;
@@ -614,21 +664,17 @@ export default function App() {
     const delta = -e.deltaY * 0.01;
     const newZoom = Math.min(6, Math.max(1, zoom * Math.exp(delta)));
     if (newZoom === zoom) return;
-    // Keep the point under the cursor stable by adjusting pan
     const factor = newZoom / zoom - 1;
     setPan(p => ({ x: p.x - (originX - rect.width / 2 - p.x) * factor,
                    y: p.y - (originY - rect.height / 2 - p.y) * factor }));
     setZoom(newZoom);
   };
-
   const onStageTouchStart = (e) => {
     if (e.touches.length === 2) {
       const [a, b] = e.touches;
       pinch.current = {
         startDist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
         startZoom: zoom,
-        centerX: (a.clientX + b.clientX) / 2,
-        centerY: (a.clientY + b.clientY) / 2,
       };
     }
   };
@@ -642,11 +688,9 @@ export default function App() {
     }
   };
   const onStageTouchEnd = () => { pinch.current = null; };
-
-  // Double-click to reset zoom
   const onStageDoubleClick = () => resetZoom();
 
-  // ──────── Export ────────
+  // Export
   const getExportDataUrl = (g) => {
     if (g.useAiForExport && g.aiResult) return g.aiResult;
     return composeMockup(g, currentLogo.img, g.placement);
@@ -663,15 +707,19 @@ export default function App() {
   };
 
   const exportAll = async () => {
-    if (!garments.length || !currentLogo) return;
+    const targets = garments.filter(g => g.selected);
+    if (!targets.length || !currentLogo) return;
     setExporting(true); setExportProgress(0);
     const files = [];
-    for (let i = 0; i < garments.length; i++) {
-      const g = garments[i];
+    // Use the original index (in full garments list) for filename's `index` token,
+    // so renumbering doesn't happen if user toggles selection.
+    for (let i = 0; i < targets.length; i++) {
+      const g = targets[i];
+      const fullIndex = garments.findIndex(x => x.id === g.id);
       const dataUrl = getExportDataUrl(g);
-      const filename = buildFilename({ tokens, prefix: filenamePrefix, garment: g, index: i });
+      const filename = buildFilename({ tokens, prefix: filenamePrefix, garment: g, index: fullIndex });
       files.push({ name: filename, data: dataUrlToBytes(dataUrl) });
-      setExportProgress(Math.round(((i + 1) / garments.length) * 100));
+      setExportProgress(Math.round(((i + 1) / targets.length) * 100));
       await new Promise(r => setTimeout(r, 10));
     }
     const zip = await buildZip(files);
@@ -690,15 +738,20 @@ export default function App() {
     : '';
   const previewPattern = tokens.filter(t => t.enabled).map(t => t.id).join('-') || 'mockup';
   const aiReadyCount = garments.filter(g => g.aiResult).length;
+  const selectedCount = garments.filter(g => g.selected).length;
 
   return (
-    <div className="min-h-screen w-full bg-white text-black"
-      style={{ fontFamily: "'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif" }}>
+    <div className="bg-white text-black"
+      style={{
+        height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        fontFamily: "'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif",
+      }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         * { box-sizing: border-box; } body { margin: 0; }
         .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 500; color: #000; }
         .label-muted { color: #666; }
+        .original-name { font-size: 10px; color: #999; font-family: 'SF Mono', ui-monospace, Menlo, monospace; word-break: break-all; line-height: 1.3; }
         .hairline { border-top: 1px solid #E5E5E5; }
         .btn { padding: 8px 14px; font-size: 12px; font-weight: 500; transition: all 120ms ease; cursor: pointer; letter-spacing: 0.02em; border-radius: 0; }
         .btn-primary { background: #000; color: #fff; border: 1px solid #000; }
@@ -712,9 +765,12 @@ export default function App() {
         .btn-ai:disabled { border-color: #CCC; color: #CCC; cursor: not-allowed; }
         .btn-text { background: transparent; border: none; padding: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 500; cursor: pointer; color: #000; }
         .btn-text:hover { text-decoration: underline; text-underline-offset: 3px; }
+        .btn-text-muted { color: #999; }
+        .btn-text-muted:hover { color: #000; }
         .thumb { border: 1px solid #E5E5E5; transition: all 150ms; background: #fff; position: relative; }
         .thumb:hover { border-color: #000; }
         .thumb.active { border-color: #000; border-width: 2px; }
+        .thumb.unselected { opacity: 0.45; }
         .zone-btn { background: #fff; color: #000; border: 1px solid #E5E5E5; transition: all 120ms; font-size: 11px; padding: 8px 6px; font-weight: 500; cursor: pointer; }
         .zone-btn:hover { border-color: #000; background: #F7F7F7; }
         .zone-btn.active { background: #000; color: #fff; border-color: #000; }
@@ -727,18 +783,18 @@ export default function App() {
         .drop-zone:hover { border-color: #000; background: #F2F2F2; }
         .canvas-stage { background-color: #FAFAFA;
           background-image: linear-gradient(#EEE 1px, transparent 1px), linear-gradient(90deg, #EEE 1px, transparent 1px);
-          background-size: 20px 20px; overflow: hidden; position: relative;
-          touch-action: none; /* enable pinch events */ }
+          background-size: 20px 20px; overflow: hidden; position: relative; touch-action: none; }
         .canvas-zoom { transform-origin: center center; transition: transform 80ms ease-out; }
         input[type="text"], textarea { width: 100%; padding: 8px 10px; border: 1px solid #E5E5E5; background: #fff; font-size: 13px; font-family: inherit; border-radius: 0; outline: none; transition: border-color 120ms; }
         input[type="text"]:focus, textarea:focus { border-color: #000; }
         .inline-edit { padding: 2px 4px !important; font-size: 13px !important; border: 1px solid #000 !important; }
+        .inline-edit-small { padding: 1px 3px !important; font-size: 11px !important; border: 1px solid #000 !important; width: 60px !important; }
         select { background: transparent; font-family: inherit; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #666; border: none; outline: none; padding: 0; cursor: pointer; }
         .mono { font-family: 'SF Mono', ui-monospace, Menlo, monospace; }
         .token-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid #E5E5E5; background: #fff; margin-bottom: 4px; cursor: grab; user-select: none; transition: border-color 120ms, background 120ms; }
         .token-row:hover { border-color: #000; } .token-row.disabled { opacity: 0.5; background: #FAFAFA; }
         .token-row.dragging { opacity: 0.3; } .token-row:active { cursor: grabbing; }
-        .token-checkbox { width: 14px; height: 14px; border: 1px solid #000; display: inline-flex; align-items: center; justify-content: center; background: #fff; }
+        .token-checkbox { width: 14px; height: 14px; border: 1px solid #000; display: inline-flex; align-items: center; justify-content: center; background: #fff; cursor: pointer; }
         .token-checkbox.checked { background: #000; color: #fff; }
         .spin { animation: spin 1s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 24px; }
@@ -748,19 +804,17 @@ export default function App() {
         .compare-cell img { max-width: 100%; max-height: 60vh; object-fit: contain; display: block; }
         .ai-banner { background: #FFF8E1; border: 1px solid #F2D97B; padding: 10px 14px; font-size: 13px; display: flex; align-items: center; gap: 10px; }
         .error-banner { background: #FFEAEA; border: 1px solid #F2A0A0; padding: 10px 14px; font-size: 13px; }
-        .view-toggle {
-          display: inline-flex; border: 1px solid #000;
-        }
+        .view-toggle { display: inline-flex; border: 1px solid #000; }
         .view-toggle button { padding: 4px 10px; font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; background: #fff; color: #000; border: none; cursor: pointer; }
         .view-toggle button.active { background: #000; color: #fff; }
-        .view-toggle button:disabled { opacity: 0.3; cursor: not-allowed; }
         .zoom-controls {
           position: absolute; top: 10px; right: 10px;
           display: flex; align-items: center; gap: 0;
           background: #fff; border: 1px solid #000; z-index: 3;
         }
         .zoom-controls button { padding: 4px 8px; font-size: 11px; background: #fff; color: #000; border: none; cursor: pointer; font-weight: 500; }
-        .zoom-controls button:hover { background: #000; color: #fff; }
+        .zoom-controls button:hover:not(:disabled) { background: #000; color: #fff; }
+        .zoom-controls button:disabled { color: #CCC; cursor: not-allowed; }
         .zoom-controls .divider { width: 1px; background: #E5E5E5; align-self: stretch; }
         .zoom-controls .readout { padding: 4px 10px; font-size: 11px; font-variant-numeric: tabular-nums; border: none; background: transparent; cursor: default; }
         .section-header {
@@ -769,10 +823,25 @@ export default function App() {
           border-top: 1px solid #E5E5E5;
         }
         .section-header:hover { color: #666; }
+        .version-header {
+          display: flex; align-items: center; gap: 8px;
+          padding: 6px 4px; cursor: pointer; user-select: none;
+          border-bottom: 1px solid #E5E5E5;
+          background: #FAFAFA;
+        }
+        .version-header:hover { background: #F2F2F2; }
+        .check { width: 14px; height: 14px; border: 1px solid #000; display: inline-flex; align-items: center; justify-content: center; background: #fff; cursor: pointer; flex-shrink: 0; }
+        .check.checked { background: #000; color: #fff; }
+        .check.partial { background: #fff; color: #000; }
+        .check.partial::after { content: ''; width: 8px; height: 1.5px; background: #000; }
+        .scroll-y { overflow-y: auto; min-height: 0; }
+        .scroll-y::-webkit-scrollbar { width: 6px; }
+        .scroll-y::-webkit-scrollbar-thumb { background: #CCC; }
+        .scroll-y::-webkit-scrollbar-thumb:hover { background: #999; }
       `}</style>
 
       {/* HEADER */}
-      <header className="border-b border-black/10">
+      <header className="border-b border-black/10 flex-shrink-0">
         <div className="max-w-[1600px] mx-auto px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-8">
             <div className="flex items-center gap-3">
@@ -788,16 +857,15 @@ export default function App() {
             {AI_ENABLED && (
               <>
                 <button className="btn btn-ai flex items-center gap-2" onClick={harmonizeCurrent}
-                  disabled={!currentGarment || !currentLogo || aiBusy || aiBatchBusy}
-                  title="AI-harmonize the current garment">
+                  disabled={!currentGarment || !currentLogo || aiBusy || aiBatchBusy}>
                   {aiBusy ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}
                   {aiBusy ? 'Harmonizing…' : 'Harmonize'}
                 </button>
                 <button className="btn btn-ai flex items-center gap-2" onClick={harmonizeAll}
-                  disabled={!garments.length || !currentLogo || aiBusy || aiBatchBusy}
-                  title="AI-harmonize all garments">
+                  disabled={!selectedCount || !currentLogo || aiBusy || aiBatchBusy}
+                  title={`Harmonize ${selectedCount} selected garment(s)`}>
                   {aiBatchBusy ? <Loader2 size={13} className="spin" /> : <Zap size={13} />}
-                  {aiBatchBusy ? `${aiBatchProgress}%` : 'Harmonize All'}
+                  {aiBatchBusy ? `${aiBatchProgress}%` : `Harmonize ${selectedCount}`}
                 </button>
               </>
             )}
@@ -806,15 +874,16 @@ export default function App() {
               <Download size={13} /> Current
             </button>
             <button className="btn btn-primary flex items-center gap-2" onClick={exportAll}
-              disabled={!garments.length || !currentLogo || exporting}>
+              disabled={!selectedCount || !currentLogo || exporting}
+              title={`Export ${selectedCount} selected garment(s) as ZIP`}>
               <Package size={13} />
-              {exporting ? `${exportProgress}%` : `Export ${garments.length || 0} as ZIP`}
+              {exporting ? `${exportProgress}%` : `Export ${selectedCount} as ZIP`}
             </button>
           </div>
         </div>
 
         {showExportPanel && (
-          <div className="border-t border-black/10 bg-[#FAFAFA]">
+          <div className="border-t border-black/10 bg-[#FAFAFA] max-h-[40vh] overflow-y-auto">
             <div className="max-w-[1600px] mx-auto px-8 py-6 grid grid-cols-12 gap-6">
               <div className="col-span-12 md:col-span-3">
                 <label className="label block mb-2">Filename prefix</label>
@@ -849,40 +918,56 @@ export default function App() {
               <div className="col-span-12 md:col-span-3">
                 <label className="label block mb-2">AI prompt (optional)</label>
                 <textarea rows={5} value={aiPrompt} onChange={e => setAiPrompt(e.target.value)}
-                  placeholder="Leave empty to use the default (strict preservation) prompt. Override only if needed." />
-                <p className="text-xs text-black/50 mt-1.5">The default prompt now explicitly tells AI to preserve drawstrings, pockets, seams, etc.</p>
+                  placeholder="Leave empty to use the default (strict preservation) prompt." />
+                <p className="text-xs text-black/50 mt-1.5">Override the default harmonization prompt for this session.</p>
               </div>
             </div>
           </div>
         )}
+
+        {!AI_ENABLED && (
+          <div className="ai-banner mx-8 my-2">
+            <Sparkles size={14} />
+            <span>AI harmonization disabled on GitHub Pages. Deploy to Vercel to enable it.</span>
+          </div>
+        )}
+        {aiError && (
+          <div className="error-banner mx-8 my-2">
+            <strong>AI error:</strong> {aiError}
+            <button className="btn-text ml-3" onClick={() => setAiError(null)}>dismiss</button>
+          </div>
+        )}
       </header>
 
-      {!AI_ENABLED && (
-        <div className="ai-banner max-w-[1600px] mx-auto mt-4 mx-8">
-          <Sparkles size={14} />
-          <span>AI harmonization is disabled on GitHub Pages (no backend). Deploy to Vercel to enable it.</span>
-        </div>
-      )}
-      {aiError && (
-        <div className="error-banner max-w-[1600px] mx-auto mt-4 mx-8">
-          <strong>AI error:</strong> {aiError}
-          <button className="btn-text ml-3" onClick={() => setAiError(null)}>dismiss</button>
-        </div>
-      )}
+      {/* MAIN — fills the rest of the viewport */}
+      <div style={{ flex: 1, minHeight: 0 }}
+        className="max-w-[1600px] mx-auto px-8 py-4 grid grid-cols-12 gap-6 w-full">
 
-      <div className="max-w-[1600px] mx-auto px-8 py-6 grid grid-cols-12 gap-6">
-        {/* LEFT */}
-        <aside className="col-span-12 lg:col-span-3 space-y-8">
-          <section>
-            <div className="flex items-center justify-between mb-3">
+        {/* LEFT — fixed, internal scrolling */}
+        <aside className="col-span-12 lg:col-span-3 flex flex-col gap-4" style={{ minHeight: 0 }}>
+          {/* Garments */}
+          <section className="flex flex-col" style={{ flex: 1, minHeight: 0 }}>
+            <div className="flex items-center justify-between mb-2 flex-shrink-0">
               <div className="flex items-center gap-2">
                 <Shirt size={13} />
-                <h2 className="label">Garments · {garments.length} {aiReadyCount > 0 && <span className="label-muted ml-1">· {aiReadyCount} AI</span>}</h2>
+                <h2 className="label">
+                  Garments · {garments.length}
+                  {garments.length > 0 && <span className="label-muted ml-1">· {selectedCount} selected</span>}
+                  {aiReadyCount > 0 && <span className="label-muted ml-1">· {aiReadyCount} AI</span>}
+                </h2>
               </div>
               <button onClick={() => garmentInput.current.click()} className="btn-text">+ Add</button>
               <input ref={garmentInput} type="file" multiple accept="image/*" className="hidden"
                 onChange={e => handleGarmentUpload(e.target.files)} />
             </div>
+
+            {garments.length > 0 && (
+              <div className="flex items-center gap-3 mb-2 flex-shrink-0">
+                <button className="btn-text btn-text-muted" onClick={selectAll}>Select all</button>
+                <span className="text-black/20">·</span>
+                <button className="btn-text btn-text-muted" onClick={selectNone}>None</button>
+              </div>
+            )}
 
             {garments.length === 0 && (
               <div className="drop-zone p-8 text-center" onClick={() => garmentInput.current.click()}>
@@ -892,63 +977,122 @@ export default function App() {
               </div>
             )}
 
-            <div className="space-y-2 max-h-[480px] overflow-y-auto">
-              {garments.map(g => (
-                <div key={g.id}
-                  className={`thumb cursor-pointer p-2 flex items-start gap-3 ${activeGarment === g.id ? 'active' : ''}`}
-                  onClick={() => setActiveGarment(g.id)}>
-                  <div className="relative flex-shrink-0">
-                    <img src={g.aiResult && g.useAiForExport ? g.aiResult : g.url} alt={g.displayName} className="w-12 h-12 object-cover" />
-                    {g.aiResult && (
-                      <div className="absolute top-0 left-0 w-4 h-4 bg-black text-white flex items-center justify-center">
-                        <Sparkles size={9} />
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    {editingName === g.id ? (
-                      <input type="text" className="inline-edit" value={g.displayName} autoFocus
-                        onClick={e => e.stopPropagation()}
-                        onChange={e => updateGarment(g.id, { displayName: e.target.value })}
-                        onBlur={() => setEditingName(null)}
-                        onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setEditingName(null); }} />
-                    ) : (
-                      <div className="text-sm truncate flex items-center gap-1 group"
-                        onClick={e => { e.stopPropagation(); setEditingName(g.id); }} title="Click to rename">
-                        <span className="truncate">{g.displayName}</span>
-                        <Pencil size={10} className="opacity-0 group-hover:opacity-40 flex-shrink-0" />
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <select value={g.type} onClick={e => e.stopPropagation()}
-                        onChange={e => updateGarment(g.id, { type: e.target.value })}>
-                        {GARMENT_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-                      </select>
-                      <span className="text-black/20">·</span>
-                      <select value={g.gender} onClick={e => e.stopPropagation()}
-                        onChange={e => updateGarment(g.id, { gender: e.target.value })}>
-                        {GENDERS.map(ge => <option key={ge.id} value={ge.id}>{ge.label}</option>)}
-                      </select>
-                    </div>
-                    {g.aiResult && (
-                      <button className="btn-text mt-1 flex items-center gap-1"
-                        onClick={e => { e.stopPropagation(); toggleAiForExport(g.id); }}
-                        title={g.useAiForExport ? 'Using AI — click to use Canvas' : 'Using Canvas — click to use AI'}>
-                        {g.useAiForExport ? <><Eye size={10}/> AI</> : <><EyeOff size={10}/> Canvas</>}
+            <div className="scroll-y" style={{ flex: 1 }}>
+              {groupedGarments.map(([versionKey, gs]) => {
+                const isCollapsed = collapsedVersions.has(versionKey);
+                const allSelected = gs.every(g => g.selected);
+                const someSelected = gs.some(g => g.selected);
+                const checkClass = allSelected ? 'checked' : someSelected ? 'partial' : '';
+                const versionLabel = versionKey === NO_VERSION ? 'No version' : versionKey;
+                return (
+                  <div key={versionKey} className="mb-3">
+                    <div className="version-header">
+                      <button
+                        className={`check ${checkClass}`}
+                        onClick={(e) => { e.stopPropagation(); setVersionSelected(versionKey, !allSelected); }}
+                        title={allSelected ? 'Deselect all in this version' : 'Select all in this version'}
+                      >
+                        {allSelected && <Check size={10} strokeWidth={3} />}
                       </button>
+                      <button className="flex items-center gap-1 flex-1 text-left bg-transparent border-none cursor-pointer"
+                        onClick={() => toggleVersionCollapsed(versionKey)}>
+                        {isCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
+                        <span className="label">{versionLabel}</span>
+                        <span className="label-muted ml-1">· {gs.length}</span>
+                      </button>
+                    </div>
+
+                    {!isCollapsed && (
+                      <div className="space-y-1.5 pt-1.5">
+                        {gs.map(g => (
+                          <div key={g.id}
+                            className={`thumb cursor-pointer p-2 flex items-start gap-2 ${activeGarment === g.id ? 'active' : ''} ${!g.selected ? 'unselected' : ''}`}
+                            onClick={() => setActiveGarment(g.id)}>
+
+                            <button
+                              className={`check ${g.selected ? 'checked' : ''} mt-1`}
+                              onClick={(e) => { e.stopPropagation(); toggleSelected(g.id); }}
+                              title={g.selected ? 'Deselect' : 'Select for export'}
+                            >
+                              {g.selected && <Check size={9} strokeWidth={3} />}
+                            </button>
+
+                            <div className="relative flex-shrink-0">
+                              <img src={g.aiResult && g.useAiForExport ? g.aiResult : g.url}
+                                alt={g.displayName} className="w-12 h-12 object-cover" />
+                              {g.aiResult && (
+                                <div className="absolute top-0 left-0 w-4 h-4 bg-black text-white flex items-center justify-center">
+                                  <Sparkles size={9} />
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex-1 min-w-0">
+                              {editingName === g.id ? (
+                                <input type="text" className="inline-edit" value={g.displayName} autoFocus
+                                  onClick={e => e.stopPropagation()}
+                                  onChange={e => updateGarment(g.id, { displayName: e.target.value })}
+                                  onBlur={() => setEditingName(null)}
+                                  onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setEditingName(null); }} />
+                              ) : (
+                                <div className="text-sm truncate flex items-center gap-1 group"
+                                  onClick={e => { e.stopPropagation(); setEditingName(g.id); }} title="Click to rename">
+                                  <span className="truncate">{g.displayName}</span>
+                                  <Pencil size={10} className="opacity-0 group-hover:opacity-40 flex-shrink-0" />
+                                </div>
+                              )}
+                              <div className="original-name truncate" title={g.originalName}>{g.originalName}</div>
+                              <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                                <select value={g.type} onClick={e => e.stopPropagation()}
+                                  onChange={e => updateGarment(g.id, { type: e.target.value })}>
+                                  {GARMENT_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                                </select>
+                                <span className="text-black/20">·</span>
+                                <select value={g.gender} onClick={e => e.stopPropagation()}
+                                  onChange={e => updateGarment(g.id, { gender: e.target.value })}>
+                                  {GENDERS.map(ge => <option key={ge.id} value={ge.id}>{ge.label}</option>)}
+                                </select>
+                                <span className="text-black/20">·</span>
+                                {editingVersion === g.id ? (
+                                  <input type="text" className="inline-edit-small" value={g.version || ''} autoFocus
+                                    placeholder="version"
+                                    onClick={e => e.stopPropagation()}
+                                    onChange={e => updateGarment(g.id, { version: e.target.value })}
+                                    onBlur={() => setEditingVersion(null)}
+                                    onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setEditingVersion(null); }} />
+                                ) : (
+                                  <button className="label label-muted bg-transparent border-none p-0 cursor-pointer hover:text-black"
+                                    onClick={e => { e.stopPropagation(); setEditingVersion(g.id); }}
+                                    title="Click to set version">
+                                    {g.version || <span className="italic">+ ver</span>}
+                                  </button>
+                                )}
+                              </div>
+                              {g.aiResult && (
+                                <button className="btn-text mt-1 flex items-center gap-1"
+                                  onClick={e => { e.stopPropagation(); toggleAiForExport(g.id); }}>
+                                  {g.useAiForExport ? <><Eye size={10}/> AI</> : <><EyeOff size={10}/> Canvas</>}
+                                </button>
+                              )}
+                            </div>
+
+                            <button onClick={e => { e.stopPropagation(); removeGarment(g.id); }}
+                              className="opacity-30 hover:opacity-100 flex-shrink-0">
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
-                  <button onClick={e => { e.stopPropagation(); removeGarment(g.id); }}
-                    className="opacity-30 hover:opacity-100 flex-shrink-0">
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
 
-          <section>
-            <div className="flex items-center justify-between mb-3">
+          {/* Logos — fixed height */}
+          <section className="flex-shrink-0">
+            <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <ImageIcon size={13} />
                 <h2 className="label">Logos · {logos.length}</h2>
@@ -959,24 +1103,23 @@ export default function App() {
             </div>
 
             {logos.length === 0 && (
-              <div className="drop-zone p-8 text-center" onClick={() => logoInput.current.click()}>
-                <Upload size={18} className="mx-auto mb-2 opacity-40" />
-                <p className="text-sm">Drop your logo</p>
-                <p className="label label-muted mt-1">PNG (transparent)</p>
+              <div className="drop-zone p-4 text-center" onClick={() => logoInput.current.click()}>
+                <Upload size={16} className="mx-auto mb-1 opacity-40" />
+                <p className="text-xs">Drop your logo</p>
               </div>
             )}
 
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-1.5">
               {logos.map(l => (
                 <div key={l.id}
-                  className={`thumb relative cursor-pointer aspect-square p-2 ${activeLogo === l.id ? 'active' : ''}`}
+                  className={`thumb relative cursor-pointer aspect-square p-1.5 ${activeLogo === l.id ? 'active' : ''}`}
                   style={{ backgroundImage: 'linear-gradient(45deg, #F2F2F2 25%, transparent 25%), linear-gradient(-45deg, #F2F2F2 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #F2F2F2 75%), linear-gradient(-45deg, transparent 75%, #F2F2F2 75%)',
-                    backgroundSize: '10px 10px', backgroundPosition: '0 0, 0 5px, 5px -5px, -5px 0' }}
+                    backgroundSize: '8px 8px', backgroundPosition: '0 0, 0 4px, 4px -4px, -4px 0' }}
                   onClick={() => setActiveLogo(l.id)}>
                   <img src={l.url} alt={l.name} className="w-full h-full object-contain" />
                   <button onClick={e => { e.stopPropagation(); removeLogo(l.id); }}
-                    className="absolute top-1 right-1 bg-black text-white w-5 h-5 flex items-center justify-center">
-                    <X size={10} />
+                    className="absolute top-0.5 right-0.5 bg-black text-white w-4 h-4 flex items-center justify-center">
+                    <X size={9} />
                   </button>
                 </div>
               ))}
@@ -985,8 +1128,8 @@ export default function App() {
         </aside>
 
         {/* CENTER */}
-        <main className="col-span-12 lg:col-span-6">
-          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <main className="col-span-12 lg:col-span-6 flex flex-col" style={{ minHeight: 0 }}>
+          <div className="flex items-center justify-between mb-2 flex-wrap gap-2 flex-shrink-0">
             <h2 className="label flex items-center gap-2">
               <Target size={13} /> Preview
               {currentGarment?.aiResult && (
@@ -1014,7 +1157,7 @@ export default function App() {
 
           <div ref={stageRef}
             className="canvas-stage flex items-center justify-center border border-black/10"
-            style={{ minHeight: '620px', padding: '24px' }}
+            style={{ flex: 1, minHeight: 0, padding: '20px' }}
             onWheel={onStageWheel}
             onTouchStart={onStageTouchStart}
             onTouchMove={onStageTouchMove}
@@ -1023,13 +1166,13 @@ export default function App() {
 
             {currentGarment && (
               <div className="zoom-controls">
-                <button onClick={() => setZoom(z => Math.max(1, z / 1.25))} disabled={zoom <= 1} title="Zoom out">−</button>
+                <button onClick={() => setZoom(z => Math.max(1, z / 1.25))} disabled={zoom <= 1}>−</button>
                 <div className="divider" />
                 <span className="readout">{Math.round(zoom * 100)}%</span>
                 <div className="divider" />
-                <button onClick={() => setZoom(z => Math.min(6, z * 1.25))} disabled={zoom >= 6} title="Zoom in">+</button>
+                <button onClick={() => setZoom(z => Math.min(6, z * 1.25))} disabled={zoom >= 6}>+</button>
                 <div className="divider" />
-                <button onClick={resetZoom} title="Reset zoom (or double-click)">
+                <button onClick={resetZoom} title="Reset">
                   <ZoomIn size={11} style={{ display: 'inline-block', verticalAlign: 'middle' }} />
                 </button>
               </div>
@@ -1045,8 +1188,8 @@ export default function App() {
                 style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
                 {showingAi ? (
                   <img ref={aiImgRef} src={currentGarment.aiResult} alt="AI harmonized"
-                    style={{ maxWidth: `${stageRef.current?.clientWidth - 48 || 800}px`,
-                             maxHeight: `${stageRef.current?.clientHeight - 48 || 560}px`,
+                    style={{ maxWidth: `${stageRef.current?.clientWidth - 40 || 800}px`,
+                             maxHeight: `${stageRef.current?.clientHeight - 40 || 560}px`,
                              objectFit: 'contain', display: 'block' }} />
                 ) : (
                   <canvas ref={canvasRef}
@@ -1059,26 +1202,22 @@ export default function App() {
           </div>
 
           {currentGarment && currentLogo && (
-            <p className="label label-muted mt-3">
-              {showingAi
-                ? 'Viewing AI result · switch to Canvas to edit placement'
-                : 'Drag to move · Corners to resize · Top circle to rotate'}
-              {' · '}
-              Pinch / Ctrl+scroll to zoom · Double-click to reset
+            <p className="label label-muted mt-2 flex-shrink-0">
+              {showingAi ? 'Viewing AI · switch to Canvas to edit' : 'Drag to move · Corners to resize · Top circle to rotate'}
+              {' · Pinch / Ctrl+scroll to zoom · Double-click to reset'}
             </p>
           )}
         </main>
 
-        {/* RIGHT */}
-        <aside className="col-span-12 lg:col-span-3 space-y-5">
+        {/* RIGHT — fixed, internal scrolling */}
+        <aside className="col-span-12 lg:col-span-3 scroll-y" style={{ minHeight: 0 }}>
           {!currentGarment || !currentLogo ? (
             <div className="text-black/40">
               <h2 className="label mb-3 text-black flex items-center gap-2"><Sliders size={13} /> Controls</h2>
               <p className="text-sm">Add at least one garment and one logo to unlock placement.</p>
             </div>
           ) : (
-            <>
-              {/* Presets */}
+            <div className="space-y-5 pb-4">
               <section>
                 <h3 className="label mb-3">Placement — {GARMENT_TYPES.find(t => t.id === currentGarment.type)?.label}</h3>
                 <div className="grid grid-cols-2 gap-1.5">
@@ -1090,7 +1229,6 @@ export default function App() {
                 </div>
               </section>
 
-              {/* Size */}
               <section>
                 <div className="flex items-center justify-between mb-1">
                   <label className="label">Size</label>
@@ -1100,7 +1238,6 @@ export default function App() {
                   onChange={e => updatePlacement(currentGarment.id, { widthPct: +e.target.value / 100 })} />
               </section>
 
-              {/* Opacity */}
               <section>
                 <div className="flex items-center justify-between mb-1">
                   <label className="label">Opacity</label>
@@ -1110,7 +1247,6 @@ export default function App() {
                   onChange={e => updatePlacement(currentGarment.id, { opacity: +e.target.value / 100 })} />
               </section>
 
-              {/* Blend */}
               <section>
                 <label className="label flex items-center gap-1 mb-2"><Layers size={10} /> Blend Mode</label>
                 <div className="grid grid-cols-3 gap-1">
@@ -1121,7 +1257,6 @@ export default function App() {
                 </div>
               </section>
 
-              {/* Batch (pinned — always visible) */}
               <section>
                 <h3 className="label mb-2 flex items-center gap-1"><Copy size={11} /> Batch apply</h3>
                 <button className="btn btn-ghost w-full mb-1.5 flex items-center justify-center gap-2"
@@ -1134,7 +1269,6 @@ export default function App() {
                 </button>
               </section>
 
-              {/* Advanced (collapsed) */}
               <section>
                 <div className="section-header" onClick={() => setAdvancedOpen(o => !o)}>
                   <span className="label">Advanced · rotate & skew</span>
@@ -1173,7 +1307,7 @@ export default function App() {
                   </div>
                 )}
               </section>
-            </>
+            </div>
           )}
         </aside>
       </div>
@@ -1207,13 +1341,6 @@ export default function App() {
           </div>
         </div>
       )}
-
-      <footer className="hairline mt-10">
-        <div className="max-w-[1600px] mx-auto px-8 py-5 flex items-center justify-between label label-muted">
-          <span>All placement runs in your browser. AI calls go through your Vercel proxy.</span>
-          <span>v0.5 · Canvas + AI</span>
-        </div>
-      </footer>
     </div>
   );
 }
